@@ -99,6 +99,31 @@ struct WebAdapterTests {
         #expect(WebCredentialParser.extract(spec: .doubaoWeb, localStorage: [:], cookies: [:]) == nil)
     }
 
+    // MARK: 错误信封
+
+    @Test("HTTP 200 里的错误信封要被识别成人话")
+    func errorEnvelopeDetected() {
+        let object: [String: Any] = ["code": 40003, "msg": "INVALID_TOKEN", "data": NSNull()]
+        let message = WebAdapterClient.errorEnvelope(from: object)
+        #expect(message?.contains("40003") == true)
+        #expect(message?.contains("重新登录") == true)
+    }
+
+    @Test("正常 chunk 不会被误判成错误")
+    func normalChunkNotMistakenForError() {
+        let object: [String: Any] = ["choices": [["delta": ["content": "你好"]]]]
+        #expect(WebAdapterClient.errorEnvelope(from: object) == nil)
+        let doubao: [String: Any] = ["event_type": 2001, "event_data": "{}"]
+        #expect(WebAdapterClient.errorEnvelope(from: doubao) == nil)
+    }
+
+    @Test("PoW / 签名类报错给出明确提示")
+    func powHint() {
+        let object: [String: Any] = ["code": 40301, "msg": "MISSING_POW_SIGNATURE"]
+        let message = WebAdapterClient.errorEnvelope(from: object) ?? ""
+        #expect(message.contains("风控签名"))
+    }
+
     // MARK: spec 编解码
 
     @Test("三个内置预设 JSON 往返一致")

@@ -114,6 +114,12 @@ Packages/DeepSeekKit/Sources/DeepSeekUI/
 | 通义千问网页版 | chat.qwen.ai | cookie `token` | `/api/v2/chat/completions` | `sse_openai`（`phase:"think"` 走 reasoning） |
 | 豆包网页版 | www.doubao.com/chat | cookie `sessionid` | `/samantha/chat/completion` | `sse_doubao`（event_type 2001） |
 
+> **实测记录（2026-11-19）**：从 Mac 直连 `POST https://chat.deepseek.com/api/v0/chat/completion`（假 token）返回
+> `HTTP 200 + {"code":40003,"msg":"INVALID_TOKEN"}` —— 说明路径对，但**上游会用 HTTP 200 包错误信封**，
+> 客户端必须显式识别，否则会静默返回空回答。`WebAdapterClient.errorEnvelope` 已处理，并会把
+> PoW/签名类错误（`MISSING_POW_SIGNATURE`）翻译成"该渠道启用风控签名，先用官方 Key"。
+> `POST https://chat.qwen.ai/api/v2/chat/completions`（无头）返回 **405**，预设待校准。
+
 **全部 `calibrated: false`** —— 链路、翻译、凭据解析都有单测，但真实回包格式没在真账号上验过。
 
 ### 3.4 校准流程（下一个接手者最该做的事）

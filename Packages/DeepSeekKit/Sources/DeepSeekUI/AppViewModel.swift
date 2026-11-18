@@ -132,6 +132,38 @@ public final class AppViewModel {
         return errorBanner ?? "没连上：检查 Key 和网络"
     }
 
+    /// 最近一次网页版通道的原始报错，界面上可复制，方便排查
+    public var lastAdapterError: String?
+
+    /// 让用户当场验证某个网页版渠道：发一句 ping，把结果原样返回
+    public func testWebAdapter(_ spec: WebAdapterSpec) async -> String {
+        guard let token = (try? vault.loadSecret(for: webCredentialAccount(spec))) ?? nil, !token.isEmpty else {
+            return "还没登录这个渠道"
+        }
+        var collected = ""
+        do {
+            let stream = WebAdapterClient().stream(
+                spec: spec,
+                credential: token,
+                model: spec.models.first ?? "",
+                messages: [ChatMessage(role: .user, content: "回复两个字：收到")]
+            )
+            for try await delta in stream {
+                if case let .content(text) = delta {
+                    collected += text
+                    if collected.count >= 24 { break }
+                }
+            }
+            lastAdapterError = nil
+            return collected.isEmpty
+                ? "连上了，但没拿到文本：回包格式和预设对不上，需要校准"
+                : "通了：\(collected.prefix(24))"
+        } catch {
+            lastAdapterError = error.localizedDescription
+            return "\(error.localizedDescription)"
+        }
+    }
+
     /// 首次切到无限制模式时弹一次说明（体感入口）
     public var purgeIntroPresented: Bool = false
     public var hasSeenPurgeIntro: Bool = false

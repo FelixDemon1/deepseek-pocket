@@ -121,6 +121,31 @@ public struct WebAdapterClient: Sendable {
         return parts.joined(separator: "\n\n")
     }
 
+    /// 识别上游的「HTTP 200 + 错误信封」。
+    static func errorEnvelope(from object: [String: Any]) -> String? {
+        if let code = object["code"] as? Int, code != 0 {
+            let message = (object["msg"] as? String) ?? (object["message"] as? String) ?? "未知错误"
+            var hint = "上游返回 code \(code)：\(message)"
+            let lowered = message.lowercased()
+            if lowered.contains("token") || lowered.contains("auth") || code == 40003 {
+                hint += "。登录状态可能已经失效，长按渠道重新登录。"
+            }
+            if lowered.contains("pow") || lowered.contains("sign") || lowered.contains("challenge") {
+                hint += "。该渠道启用了风控签名（PoW/签名头），当前预设还解不了，建议先用「使用官方 API Key」。"
+            }
+            return hint
+        }
+        if let error = object["error"] as? [String: Any] {
+            let message = (error["message"] as? String) ?? "未知错误"
+            return "上游返回错误：\(message)"
+        }
+        if object["choices"] == nil, object["type"] == nil, object["event_type"] == nil,
+           let message = object["msg"] as? String {
+            return "上游返回：\(message)"
+        }
+        return nil
+    }
+
     static func messagesJSON(_ messages: [ChatMessage]) -> String {
         let payload = messages
             .filter { $0.role == .user || $0.role == .assistant || $0.role == .system }
@@ -166,18 +191,41 @@ public struct WebAdapterClient: Sendable {
                     }
 
                     var extractor = WebDeltaExtractor(mode: spec.responseMode, streamPath: spec.streamPath)
+                    var sawAnyDelta = false
                     for try await line in bytes.lines {
                         let trimmed = line.trimmingCharacters(in: .whitespaces)
                         guard !trimmed.isEmpty else { continue }
+
+                        // 上游经常用 HTTP 200 + 错误信封（如 {"code":40003,"msg":"INVALID_TOKEN"}），
+                        // 当成流去解就会静默拿到空回答。这里显式识别。
+                        if !trimmed.hasPrefix("data:"),
+                           let data = trimmed.data(using: .utf8),
+                           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let envelope = Self.errorEnvelope(from: object) {
+                            throw WebAdapterError.httpError(statusCode: 200, message: envelope)
+                        }
                         if trimmed.hasPrefix("event:") || trimmed.hasPrefix("id:") { continue }
                         if trimmed.hasPrefix(":") { continue }  // SSE 心跳
                         let payload = trimmed.hasPrefix("data:")
                             ? String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
                             : trimmed
                         if payload == "[DONE]" { break }
-                        for delta in extractor.extract(payload) {
+                        if let data = payload.data(using: .utf8),
+                           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                           let envelope = Self.errorEnvelope(from: object),
+                           WebJSONPath.string(in: object, path: "choices") == nil {
+                            throw WebAdapterError.httpError(statusCode: 200, message: envelope)
+                        }
+                        let deltas = extractor.extract(payload)
+                        if !deltas.isEmpty { sawAnyDelta = true }
+                        for delta in deltas {
                             continuation.yield(delta)
                         }
+                    }
+                    if !sawAnyDelta && spec.calibrated == false {
+                        throw WebAdapterError.upstream(
+                            "上游连上了但没有返回可识别的内容，这个渠道的回包格式还没校准（预期 \(spec.responseMode.rawValue)）"
+                        )
                     }
                     continuation.finish()
                 } catch {
