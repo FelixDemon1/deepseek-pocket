@@ -1,0 +1,47 @@
+name: iOS Build, Test & Unsigned IPA
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-verify:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Swift 6 Core Security & Protocol Unit Tests
+        run: |
+          cd Packages/DeepSeekKit
+          swift test
+
+      - name: Run Self-Hosted Go Gateway Unit Tests
+        run: |
+          cd gateway
+          go test ./...
+          go vet ./...
+
+      - name: Build Unsigned Release IPA
+        run: bash scripts/build-unsigned-ipa.sh
+
+      - name: Upload Unsigned IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepSeekGo-unsigned-ipa
+          path: dist/DeepSeekGo-unsigned.ipa
+          retention-days: 30
+
+      - name: Publish GitHub Release on Tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DeepSeekGo-unsigned.ipa
+          generate_release_notes: true

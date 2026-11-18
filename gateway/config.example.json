@@ -1,0 +1,26 @@
+{
+  "listen": "0.0.0.0:8787",
+  "admin_token": "change-me-to-a-long-random-string",
+  "data_file": "./data/data.json",
+  "public_base_url": "https://gw.example.com",
+  "upstream_base_url": "https://api.deepseek.com/v1",
+  "upstream_keys": [
+    { "name": "own-key-1", "key": "sk-YOUR-OWN-DEEPSEEK-API-KEY" }
+  ],
+
+  "allow_anonymous": true,
+  "anonymous_daily_tokens": 50000,
+  "global_daily_tokens": 2000000,
+  "requests_per_minute": 20,
+
+  "byoa": {
+    "enabled": false,
+    "encryption_key": "change-me-32-chars-random-secret",
+    "spec_path": "./spec.json"
+  },
+
+  "default_monthly_quota": 2000000,
+  "max_tokens_per_request": 8192,
+  "upstream_timeout_seconds": 300,
+  "models": ["deepseek-chat", "deepseek-reasoner"]
+}

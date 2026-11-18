@@ -1,0 +1,25 @@
+
+# Never commit local secrets or signing profiles
+# Xcode & SwiftPM build outputs
+# gateway runtime data
+*.dSYM
+*.dSYM.zip
+*.ipa
+*.mobileprovision
+*.p12
+*.xcuserdata
+.DS_Store
+.build/
+.env
+.swiftpm/
+DerivedData/
+build/
+dist/
+gateway/.venv/
+gateway/config.json
+gateway/spec.json
+gateway/data.json
+gateway/data/
+gateway/dsggw
+gateway/gateway
+xcuserdata/

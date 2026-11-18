@@ -1,0 +1,6 @@
+data/
+data.json
+config.json
+gateway
+dsggw
+*.test

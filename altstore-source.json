@@ -1,0 +1,33 @@
+{
+  "name": "DeepSeek Go Source",
+  "identifier": "io.deepseekgo.ios.source",
+  "subtitle": "iOS 17–27 纯原生零遥测双核 Agent 工作台",
+  "website": "https://github.com/FelixDemon1/deepseek-go-ios",
+  "apps": [
+    {
+      "name": "DeepSeek Go",
+      "bundleIdentifier": "io.deepseekgo.ios",
+      "developerName": "DeepSeek Go Contributors",
+      "localizedDescription": "纯原生 Swift 双核 AI Agent 工作台：零第三方遥测、实时出站流量审计、生成中途插话纠偏、相册离线 Vision OCR、直连电脑端 dsh web。",
+      "iconURL": "https://raw.githubusercontent.com/FelixDemon1/deepseek-go-ios/main/App/Assets.xcassets/AppIcon.appiconset/icon-1024.png",
+      "tintColor": "#4D6BFE",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "date": "2026-11-18",
+          "localizedDescription": "首发版本：纯净白蓝极简设计，兼容 iOS 17 / 18 / 26 / 27 全系。",
+          "downloadURL": "https://github.com/FelixDemon1/deepseek-go-ios/releases/latest/download/DeepSeekGo-unsigned.ipa",
+          "size": 1700000,
+          "minOSVersion": "17.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSFaceIDUsageDescription": "用于复核敏感文件写入与外部联网操作。",
+          "NSLocalNetworkUsageDescription": "用于在局域网内直连电脑端 dsh web 主机。"
+        }
+      }
+    }
+  ]
+}

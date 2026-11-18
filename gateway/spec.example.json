@@ -1,0 +1,14 @@
+{
+  "name": "自带账号适配器（示例）",
+  "chat_url": "https://REPLACE-WITH-YOUR-OWN-UPSTREAM/api/chat",
+  "method": "POST",
+  "headers": {
+    "Content-Type": "application/json",
+    "Cookie": "{{cookie}}",
+    "Authorization": "Bearer {{token}}"
+  },
+  "body_template": "{\"model\":\"{{model}}\",\"messages\":{{messages_json}},\"stream\":true}",
+  "response_mode": "sse_text",
+  "stream_path": "data.text",
+  "models": ["your-model-id"]
+}
