@@ -31,13 +31,17 @@ public struct ProviderConfig: Codable, Equatable, Sendable {
     public var baseURL: URL
     public var model: String
     public var temperature: Double
+    /// 自动探测出来的协议层；nil 表示还没探过，按 chat/completions 处理
+    public var flavor: APIProtocolFlavor?
 
     public init(
         name: String = "DeepSeek Official",
         baseURL: URL = URL(string: "https://api.deepseek.com/v1")!,
         model: String = "deepseek-reasoner",
-        temperature: Double = 0.6
+        temperature: Double = 0.6,
+        flavor: APIProtocolFlavor? = nil
     ) {
+        self.flavor = flavor
         self.name = name
         self.baseURL = baseURL
         self.model = model

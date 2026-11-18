@@ -117,7 +117,18 @@ public final class AppViewModel {
         discoveredModels = []
         errorBanner = nil
         await discoverGatewayModels()
-        if !discoveredModels.isEmpty { return nil }
+        if !discoveredModels.isEmpty {
+            // 模型列表拿到了，再探一次协议层（chat/completions 还是 responses）
+            if let flavor = await ResponsesClient.detectProtocol(
+                baseURL: baseURL, apiKey: key, firewall: firewall
+            ) {
+                var updated = providerConfig
+                updated.flavor = flavor
+                providerConfig = updated
+                persistSettings()
+            }
+            return nil
+        }
         return errorBanner ?? "没连上：检查 Key 和网络"
     }
 
@@ -216,8 +227,12 @@ public final class AppViewModel {
     /// True when the active configuration requires an API key that has not been provided yet.
     public var needsCredentialsBeforeSend: Bool {
         guard engineMode == .onDeviceHarness else { return remoteClient == nil }
+        // 网页版通道：有凭据就能直接发
+        if let spec = activeWebAdapter { return !hasWebCredential(spec) }
         let isOfficial = (providerConfig.baseURL.host?.lowercased() ?? "") == "api.deepseek.com"
-        return isOfficial && !hasAPIKeyConfigured
+        // 自定义网关（反代 / 局域网）通常不需要 key，不拦
+        if !isOfficial { return false }
+        return !hasAPIKeyConfigured
     }
 
     public var companionMood: CompanionMood {
@@ -881,6 +896,10 @@ public final class AppViewModel {
            let token = (try? vault.loadSecret(for: webCredentialAccount(spec))) ?? nil,
            !token.isEmpty {
             return WebAdapterTransport(spec: spec, credential: token)
+        }
+        // 协议层自动适配：responses 用另一个客户端，用户不需要知道
+        if providerConfig.flavor == .responses {
+            return ResponsesClient()
         }
         return DeepSeekClient()
     }

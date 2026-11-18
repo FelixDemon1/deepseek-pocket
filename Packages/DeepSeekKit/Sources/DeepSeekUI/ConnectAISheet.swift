@@ -125,13 +125,18 @@ public struct ConnectAISheet: View {
                         }
                     }
                 }
+                .contextMenu {
+                    if vm.hasWebCredential(spec) {
+                        Button("重新登录（登录过期时用）") { loginSpec = spec }
+                    }
+                }
             }
 
-            Text("在自己手机上的官方网页版里登录一次就行。App 只读自己这个网页视图的登录状态，不碰别的 App。")
+            Text("在官方网页版里登录一次就行，登录态会一直留在本机；App 只读自己这个网页视图，不碰别的 App。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         } header: {
-            Text("① 用你已有的账号（不用买 Key）")
+            Text("① 用你已有的官方账号（不用买 Key）")
         }
     }
 
@@ -166,7 +171,7 @@ public struct ConnectAISheet: View {
                 Text(message).font(.caption2).foregroundStyle(.secondary)
             }
         } header: {
-            Text("② 用自己的 Key（按用量付费，更稳）")
+            Text("② 用官方的 Key（按用量付费，更稳）")
         } footer: {
             Text("连上后会自动读一遍可用模型，读到了才算成功。")
         }

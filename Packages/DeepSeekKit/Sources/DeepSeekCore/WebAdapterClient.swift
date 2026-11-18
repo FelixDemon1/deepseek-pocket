@@ -153,6 +153,12 @@ public struct WebAdapterClient: Sendable {
                             body += line
                             if body.count > 600 { break }
                         }
+                        if http.statusCode == 401 || http.statusCode == 403 {
+                            throw WebAdapterError.httpError(
+                                statusCode: http.statusCode,
+                                message: "登录状态过期了，回到「连接 AI」重新登录 \(spec.name) 就好"
+                            )
+                        }
                         throw WebAdapterError.httpError(
                             statusCode: http.statusCode,
                             message: body.isEmpty ? "无响应体" : body

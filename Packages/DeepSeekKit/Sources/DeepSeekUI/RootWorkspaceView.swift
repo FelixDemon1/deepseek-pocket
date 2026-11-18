@@ -83,7 +83,7 @@ public struct RootWorkspaceView: View {
                     vm: vm,
                     onOpenWorkspace: { activeSheet = .workspace },
                     onOpenPresets: { activeSheet = .presets },
-                    onRequireSetup: { openSidePanel(.settings) }
+                    onRequireSetup: { activeSheet = .connectAI }
                 )
             }
         }

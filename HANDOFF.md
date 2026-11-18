@@ -135,6 +135,15 @@ Packages/DeepSeekKit/Sources/DeepSeekUI/
 - 有的站点 token 带引号或 `Bearer ` 前缀，`WebCredentialParser` 已剥
 - 请求体模板必须保持合法 JSON，`makeRequest` 会先 `JSONSerialization` 校验，坏了直接抛 `badSpec`
 
+### 3.6 协议层自适应（用户不需要选）
+
+有的「OpenAI 兼容」网关其实挂在 `/v1/responses`（OpenAI 新接口）而不是 `/v1/chat/completions`。
+`ResponsesClient.detectProtocol()` 连接时探一次：先 POST `chat/completions`，404/405 再试 `responses`，
+结果写进 `ProviderConfig.flavor`；`AppViewModel.currentTransport()` 据此选客户端。
+工具定义会在 Responses 里就地展平（`{type:function,name,parameters}`），回包解析
+`response.output_text.delta` / `reasoning_summary_text.delta` / `output_item.done(function_call)`。
+**注意**：探测用的 `probe` 模型名一定失败，只要不是 404/405 就算"路由存在"。
+
 ---
 
 ## 4. UI 现状
@@ -145,6 +154,7 @@ Packages/DeepSeekKit/Sources/DeepSeekUI/
 - **个人资料**：昵称 + 头像（默认 App 图标 `AvatarDefault`，可自传，256×256 JPEG 存 UserDefaults）
 - **连接 AI**（`ConnectAISheet`）：唯一入口。① 网页版登录（免 Key）② 官方 Key（粘贴 + 立即验证拉模型）③ 高级（自定义地址、粘贴 spec JSON）
 - 顶部胶囊点开也进「连接 AI」
+- **发送前的拦截条件**（`needsCredentialsBeforeSend`）：网页版通道看有没有凭据；官方域名看有没有 Key；自定义网关一律放行。漏判会导致"点发送却弹出设置面板"——这是曾经的线上 bug
 
 ---
 
