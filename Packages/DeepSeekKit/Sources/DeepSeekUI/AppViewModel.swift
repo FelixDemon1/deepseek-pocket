@@ -50,6 +50,77 @@ public final class AppViewModel {
     public var avatarEmoji: String = "🐳"
     public var avatarImageData: Data?
 
+    // MARK: - 网页版反代（Web Adapter）
+
+    /// 内置三个网页版渠道 + 用户自己粘贴的 spec
+    public var webAdapters: [WebAdapterSpec] = WebAdapterSpec.presets
+    /// nil = 走标准 OpenAI 兼容接口；否则走网页版翻译通道
+    public var activeWebAdapterID: String?
+
+    public var activeWebAdapter: WebAdapterSpec? {
+        guard let activeWebAdapterID else { return nil }
+        return webAdapters.first { $0.id == activeWebAdapterID }
+    }
+
+    public func webCredentialAccount(_ spec: WebAdapterSpec) -> String {
+        "webadapter.\(spec.id)"
+    }
+
+    public func hasWebCredential(_ spec: WebAdapterSpec) -> Bool {
+        ((try? vault.loadSecret(for: webCredentialAccount(spec))) ?? nil)?.isEmpty == false
+    }
+
+    public func saveWebCredential(_ token: String, for spec: WebAdapterSpec) {
+        do {
+            try vault.saveSecret(token, for: webCredentialAccount(spec))
+            activateWebAdapter(spec)
+        } catch {
+            errorBanner = error.localizedDescription
+        }
+    }
+
+    public func activateWebAdapter(_ spec: WebAdapterSpec) {
+        activeWebAdapterID = spec.id
+        var config = providerConfig
+        config.name = spec.name
+        config.model = spec.models.first ?? config.model
+        providerConfig = config
+        persistSettings()
+    }
+
+    public func deactivateWebAdapter() {
+        activeWebAdapterID = nil
+        persistSettings()
+    }
+
+    public func addCustomAdapter(_ spec: WebAdapterSpec) {
+        if let index = webAdapters.firstIndex(where: { $0.id == spec.id }) {
+            webAdapters[index] = spec
+        } else {
+            webAdapters.append(spec)
+        }
+        persistSettings()
+    }
+
+    /// 用官方 Key 直连：保存 + 立刻验证（拉一次模型列表）
+    /// 返回 nil 表示成功，否则返回给用户看的错误文案。
+    public func connectWithAPIKey(_ key: String, baseURL: URL, model: String) async -> String? {
+        saveAPIKey(key)
+        var config = providerConfig
+        config.baseURL = baseURL
+        config.model = model
+        config.name = ProviderConfig(name: "", baseURL: baseURL, model: model).name
+        providerConfig = config
+        activeWebAdapterID = nil
+        persistSettings()
+        await firewall.setAllowedModelBaseURL(baseURL)
+        discoveredModels = []
+        errorBanner = nil
+        await discoverGatewayModels()
+        if !discoveredModels.isEmpty { return nil }
+        return errorBanner ?? "没连上：检查 Key 和网络"
+    }
+
     /// 首次切到无限制模式时弹一次说明（体感入口）
     public var purgeIntroPresented: Bool = false
     public var hasSeenPurgeIntro: Bool = false
@@ -804,9 +875,19 @@ public final class AppViewModel {
 
     // MARK: - Private Turn Execution
 
+    /// 有网页版凭据就走翻译通道，否则走标准 OpenAI 兼容接口。
+    private func currentTransport() -> any ModelStreamingTransport {
+        if let spec = activeWebAdapter,
+           let token = (try? vault.loadSecret(for: webCredentialAccount(spec))) ?? nil,
+           !token.isEmpty {
+            return WebAdapterTransport(spec: spec, credential: token)
+        }
+        return DeepSeekClient()
+    }
+
     private func runLocalHarnessTurn() {
         let key = (try? vault.loadSecret(for: Self.apiKeyAccount)) ?? ""
-        let harness = AgentHarness(transport: DeepSeekClient(), toolset: toolset, firewall: firewall)
+        let harness = AgentHarness(transport: currentTransport(), toolset: toolset, firewall: firewall)
         executeHarness(harness, apiKeyOverride: key)
     }
 
@@ -987,6 +1068,8 @@ public final class AppViewModel {
         var avatarImageData: Data?
         var projects: [WorkspaceProject]?
         var hasSeenPurgeIntro: Bool?
+        var activeWebAdapterID: String?
+        var customWebAdapters: [WebAdapterSpec]?
     }
 
     private func persistSettings() {
@@ -1000,7 +1083,11 @@ public final class AppViewModel {
             avatarEmoji: avatarEmoji,
             avatarImageData: avatarImageData,
             projects: projects,
-            hasSeenPurgeIntro: hasSeenPurgeIntro
+            hasSeenPurgeIntro: hasSeenPurgeIntro,
+            activeWebAdapterID: activeWebAdapterID,
+            customWebAdapters: webAdapters.filter { spec in
+                !WebAdapterSpec.presets.contains(where: { $0.id == spec.id })
+            }
         )
         if let data = try? JSONEncoder().encode(s) {
             UserDefaults.standard.set(data, forKey: Self.settingsKey)
@@ -1035,6 +1122,8 @@ public final class AppViewModel {
             avatarImageData = s.avatarImageData
             projects = s.projects ?? []
             hasSeenPurgeIntro = s.hasSeenPurgeIntro ?? false
+            activeWebAdapterID = s.activeWebAdapterID
+            webAdapters = WebAdapterSpec.presets + (s.customWebAdapters ?? [])
         }
         if let data = UserDefaults.standard.data(forKey: Self.customPresetsKey),
            let customs = try? JSONDecoder().decode([PromptPreset].self, from: data) {

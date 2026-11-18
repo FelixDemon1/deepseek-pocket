@@ -18,8 +18,6 @@ public struct SettingsAndRemoteSheet: View {
     @State private var apiKeyDraft: String = ""
     @State private var baseURLDraft: String = ""
     @State private var modelDraft: String = ""
-    @State private var showCustomEndpoint: Bool = false
-    @State private var showScanner: Bool = false
     @State private var avatarItem: PhotosPickerItem?
 
     public init(
@@ -100,107 +98,24 @@ public struct SettingsAndRemoteSheet: View {
                         Label("从相册选择头像", systemImage: "photo")
                     }
 
-                    #if canImport(UIKit)
-                    if vm.avatarImageData != nil {
-                        Button("恢复默认头像（App 图标）") {
-                            vm.updateAvatarImage(nil)
-                        }
-                        .font(.footnote)
-                    }
-                    #endif
                 }
 
-                Section("接口与账号（选择你要使用的 AI 来源）") {
-                    LabeledContent("当前使用", value: vm.providerConfig.friendlyEndpointLabel)
+                Section("AI 接口") {
+                    LabeledContent("现在用的是", value: vm.activeWebAdapter?.name ?? vm.providerConfig.friendlyEndpointLabel)
                         .font(.footnote)
 
-                    Menu("一键切换常用接口") {
-                        ForEach(ProviderConfig.presets, id: \.label) { preset in
-                            Button(preset.label) {
-                                baseURLDraft = preset.base
-                                modelDraft = preset.model
-                                commitChanges()
-                            }
-                        }
+                    Button {
+                        vm.requestedSheetName = "connect"
+                        close()
+                    } label: {
+                        Label("连接或更换 AI（三条路，任选一条）", systemImage: "bolt.horizontal.circle")
+                            .font(.footnote)
                     }
-
-                    SecureField(
-                        vm.hasAPIKeyConfigured ? "已填密钥（\(vm.maskedAPIKeyPreview())，可输入新密钥覆盖）" : "在此粘贴你的 API 密钥 (sk-...)",
-                        text: $apiKeyDraft
-                    )
-                    .font(.footnote.monospaced())
-                    .onSubmit { commitChanges() }
 
                     if let bal = vm.balanceInfo {
-                        LabeledContent("DeepSeek 官方账户余额", value: "\(bal.totalBalance) \(bal.currency)")
+                        LabeledContent("官方账户余额", value: "\(bal.totalBalance) \(bal.currency)")
                             .font(.footnote)
-                    } else if vm.hasAPIKeyConfigured && baseURLDraft.contains("api.deepseek.com") {
-                        Button("查询 DeepSeek 账户余额") {
-                            Task { await vm.queryDeepSeekBalance() }
-                        }
-                        .font(.footnote)
                     }
-
-                    #if os(iOS)
-                    Button {
-                        showScanner = true
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Label("扫码自动填入朋友分享的接口", systemImage: "qrcode.viewfinder")
-                                .font(.footnote.weight(.medium))
-                            Text("扫描朋友或团队提供的接口配置二维码，免手打自动填好地址和密钥")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .sheet(isPresented: $showScanner) {
-                        QRScannerSheet { code in
-                            if let url = URL(string: code) {
-                                vm.handleSetupURL(url)
-                                baseURLDraft = vm.providerConfig.baseURL.absoluteString
-                                modelDraft = vm.providerConfig.model
-                            }
-                        }
-                    }
-                    #endif
-
-                    DisclosureGroup("自定义个人接口地址与模型名称", isExpanded: $showCustomEndpoint) {
-                        TextField("接口地址（如 https://api.deepseek.com/v1）", text: $baseURLDraft)
-                            .font(.footnote.monospaced())
-                            #if os(iOS)
-                            .textInputAutocapitalization(.never)
-                            .keyboardType(.URL)
-                            #endif
-                            .autocorrectionDisabled()
-
-                        HStack {
-                            TextField("模型名称（如 deepseek-reasoner）", text: $modelDraft)
-                                .font(.footnote.monospaced())
-                                #if os(iOS)
-                                .textInputAutocapitalization(.never)
-                                #endif
-                                .autocorrectionDisabled()
-
-                            if !vm.discoveredModels.isEmpty {
-                                Menu("可选 (\(vm.discoveredModels.count))") {
-                                    ForEach(vm.discoveredModels, id: \.self) { id in
-                                        Button(id) {
-                                            modelDraft = id
-                                            commitChanges()
-                                        }
-                                    }
-                                }
-                                .font(.caption)
-                            } else {
-                                Button("获取列表") {
-                                    commitChanges()
-                                    Task { await vm.discoverGatewayModels() }
-                                }
-                                .font(.caption)
-                            }
-                        }
-                    }
-                    .font(.footnote)
                 }
 
                 Section("对话框宠物与外观") {

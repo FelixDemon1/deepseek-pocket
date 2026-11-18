@@ -7,7 +7,7 @@ import DeepSeekCore
 /// Google Gemini Mobile-inspired Minimalist Workspace Shell.
 public struct RootWorkspaceView: View {
     public enum ActiveSheet: String, Identifiable {
-        case modelPicker, workspace, presets, audit, share
+        case modelPicker, workspace, presets, audit, share, connectAI
         public var id: String { rawValue }
     }
 
@@ -105,6 +105,8 @@ public struct RootWorkspaceView: View {
                 geminiModelHalfSheet(scheme: scheme, ink: ink, secondary: secondary)
                     .presentationDetents([.height(370)])
                     .presentationDragIndicator(.visible)
+            case .connectAI:
+                ConnectAISheet(vm: vm)
             case .workspace:
                 WorkspaceBrowserSheet(vm: vm)
             case .presets:
@@ -132,7 +134,8 @@ public struct RootWorkspaceView: View {
                 switch name {
                 case "models": activeSheet = .modelPicker
                 case "settings": openSidePanel(.settings)
-                case "presets": activeSheet = .presets
+                case "connect": activeSheet = .connectAI
+            case "presets": activeSheet = .presets
                 case "drawer": openSidePanel(.sessions)
                 default: break
                 }
@@ -144,6 +147,7 @@ public struct RootWorkspaceView: View {
             switch name {
             case "models": activeSheet = .modelPicker
             case "settings": openSidePanel(.settings)
+            case "connect": activeSheet = .connectAI
             case "presets": activeSheet = .presets
             case "drawer": openSidePanel(.sessions)
             default: break
