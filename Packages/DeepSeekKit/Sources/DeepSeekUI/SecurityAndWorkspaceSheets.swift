@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 import WebKit
 import DeepSeekCore
 
-// MARK: - Network Audit Sheet (Structured Data, Zero Slogans)
+// MARK: - Beginner-Friendly Privacy & Network Record Sheet
 
 public struct NetworkAuditSheet: View {
     @Bindable public var vm: AppViewModel
@@ -16,40 +16,34 @@ public struct NetworkAuditSheet: View {
     public var body: some View {
         NavigationStack {
             List {
-                Section("白名单") {
-                    LabeledContent("模型", value: vm.allowlistInfo.modelHosts.joined(separator: ", "))
-                        .font(.footnote.monospaced())
-                    if !vm.allowlistInfo.remoteHosts.isEmpty {
-                        LabeledContent("DSH", value: vm.allowlistInfo.remoteHosts.joined(separator: ", "))
-                            .font(.footnote.monospaced())
-                    }
-                    Button("拦截自检") {
+                Section("隐私保护状态") {
+                    LabeledContent("当前仅允许连接", value: vm.providerConfig.friendlyEndpointLabel)
+                        .font(.footnote)
+                    Button("测试拦截第三方统计请求") {
                         Task { await vm.runFirewallSelfTest() }
                     }
                     .font(.footnote)
                 }
 
-                Section("记录 (\(vm.auditEntries.count))") {
+                Section("最近联网记录 (\(vm.auditEntries.count))") {
                     if vm.auditEntries.isEmpty {
-                        Text("无网络请求")
+                        Text("暂无联网记录")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(vm.auditEntries) { entry in
                             VStack(alignment: .leading, spacing: 3) {
                                 HStack {
-                                    Text(entry.wasBlocked ? "BLOCK" : "\(entry.statusCode ?? 200)")
-                                        .font(.caption2.monospaced().weight(.semibold))
+                                    Text(entry.wasBlocked ? "已拦截外部请求" : "正常连接 (\(entry.statusCode ?? 200))")
+                                        .font(.caption2.weight(.semibold))
                                         .foregroundStyle(entry.wasBlocked ? DeepSeekTheme.diffRemoved : DeepSeekTheme.diffAdded)
-                                    Text("\(entry.method) \(entry.host)")
-                                        .font(.caption.monospaced())
                                     Spacer()
                                     Text("\(entry.durationMs)ms")
                                         .font(.caption2.monospaced())
                                         .foregroundStyle(.secondary)
                                 }
-                                Text(entry.path)
-                                    .font(.caption2.monospaced())
+                                Text("\(entry.host)\(entry.path)")
+                                    .font(.caption.monospaced())
                                     .foregroundStyle(.secondary)
                             }
                             .padding(.vertical, 2)
@@ -57,7 +51,7 @@ public struct NetworkAuditSheet: View {
                     }
                 }
             }
-            .navigationTitle("网络审计")
+            .navigationTitle("隐私与联网记录")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -80,7 +74,7 @@ public struct NetworkAuditSheet: View {
     }
 }
 
-// MARK: - Workspace Browser (Apple Notes Clean File List + Folder Mount)
+// MARK: - My Local Files Browser
 
 public struct WorkspaceBrowserSheet: View {
     @Bindable public var vm: AppViewModel
@@ -103,16 +97,16 @@ public struct WorkspaceBrowserSheet: View {
             List {
                 Section {
                     HStack {
-                        Label(toolset.rootURL.lastPathComponent, systemImage: "folder")
+                        Label("当前文件夹：\(toolset.rootURL.lastPathComponent)", systemImage: "folder")
                             .font(.subheadline.weight(.medium))
                         Spacer()
-                        Button("切换目录") {
+                        Button("选择手机其他文件夹") {
                             showingFolderImporter = true
                         }
                         .font(.footnote)
 
                         if toolset.isExternalSecurityScoped {
-                            Button("重置") {
+                            Button("恢复默认") {
                                 vm.resetToBuiltInWorkspace()
                                 reloadFiles()
                             }
@@ -122,7 +116,7 @@ public struct WorkspaceBrowserSheet: View {
                     }
                 }
 
-                Section {
+                Section("文件列表 (\(files.count))") {
                     ForEach(files, id: \.path) { url in
                         Button {
                             selectedFile = url
@@ -159,7 +153,7 @@ public struct WorkspaceBrowserSheet: View {
                     }
                 }
             }
-            .navigationTitle("工作区")
+            .navigationTitle("我的本地文件")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -176,7 +170,7 @@ public struct WorkspaceBrowserSheet: View {
                 }
             }
             .alert("新建文件", isPresented: $showingNewFileAlert) {
-                TextField("notes.md", text: $newFileName)
+                TextField("文件名（如 笔记.md）", text: $newFileName)
                 Button("创建") {
                     if let safe = try? toolset.resolveSafeURL(newFileName) {
                         try? FileManager.default.createDirectory(at: safe.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -221,7 +215,7 @@ public struct WorkspaceBrowserSheet: View {
     }
 }
 
-// MARK: - Clean Rules Sheet (No Subtitle Clutter, 1-Tap Rollback)
+// MARK: - Answering Style & Persona Sheet
 
 public struct PersonaStudioSheet: View {
     @Bindable public var vm: AppViewModel
@@ -240,13 +234,13 @@ public struct PersonaStudioSheet: View {
             List {
                 if vm.canRollbackPreset {
                     Section {
-                        Button("撤销上次切换") {
+                        Button("恢复上一次的回答风格") {
                             vm.rollbackPreset()
                         }
                     }
                 }
 
-                Section {
+                Section("选择 AI 的回答风格") {
                     ForEach(vm.presets) { preset in
                         Button {
                             vm.selectPreset(preset)
@@ -273,11 +267,11 @@ public struct PersonaStudioSheet: View {
                     Button {
                         showingCustomCreator = true
                     } label: {
-                        Label("新建规则", systemImage: "plus")
+                        Label("添加自定义回答要求", systemImage: "plus")
                     }
                 }
             }
-            .navigationTitle("规则")
+            .navigationTitle("回答风格与角色")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -289,13 +283,13 @@ public struct PersonaStudioSheet: View {
             .sheet(isPresented: $showingCustomCreator) {
                 NavigationStack {
                     Form {
-                        TextField("名称", text: $customTitle)
-                        Section {
+                        TextField("风格名称（例如：温柔老师 / Python 专家）", text: $customTitle)
+                        Section("告诉 AI 应该怎么回答你") {
                             TextEditor(text: $customPrompt)
                                 .frame(minHeight: 160)
                         }
                     }
-                    .navigationTitle("新建规则")
+                    .navigationTitle("新建回答风格")
                     #if os(iOS)
                     .navigationBarTitleDisplayMode(.inline)
                     #endif

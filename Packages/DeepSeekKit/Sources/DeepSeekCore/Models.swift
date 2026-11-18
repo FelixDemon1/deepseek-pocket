@@ -48,12 +48,29 @@ public struct ProviderConfig: Codable, Equatable, Sendable {
     }
 
     public static let presets: [(label: String, model: String, base: String)] = [
-        ("DeepSeek R1", "deepseek-reasoner", "https://api.deepseek.com/v1"),
-        ("DeepSeek V3", "deepseek-chat", "https://api.deepseek.com/v1"),
-        ("OpenRouter 免费 R1", "deepseek/deepseek-r1:free", "https://openrouter.ai/api/v1"),
-        ("SiliconFlow", "deepseek-ai/DeepSeek-R1", "https://api.siliconflow.cn/v1"),
-        ("本地 Ollama", "deepseek-r1:14b", "http://127.0.0.1:11434/v1")
+        ("DeepSeek 官方接口 · 深度思考 R1", "deepseek-reasoner", "https://api.deepseek.com/v1"),
+        ("DeepSeek 官方接口 · 快速回答 V3", "deepseek-chat", "https://api.deepseek.com/v1"),
+        ("免费体验接口 (OpenRouter 免充值 R1)", "deepseek/deepseek-r1:free", "https://openrouter.ai/api/v1"),
+        ("硅基流动国内接口 · R1", "deepseek-ai/DeepSeek-R1", "https://api.siliconflow.cn/v1"),
+        ("个人 / 局域网接口 (Ollama 等)", "deepseek-r1:14b", "http://127.0.0.1:11434/v1")
     ]
+
+    public var friendlyEndpointLabel: String {
+        let host = baseURL.host?.lowercased() ?? baseURL.absoluteString
+        if host.contains("api.deepseek.com") {
+            return "DeepSeek 官方接口 (api.deepseek.com)"
+        }
+        if host.contains("openrouter.ai") {
+            return "OpenRouter 免费/聚合接口 (openrouter.ai)"
+        }
+        if host.contains("siliconflow.cn") {
+            return "硅基流动国内接口 (siliconflow.cn)"
+        }
+        if host.contains("127.0.0.1") || host.contains("localhost") {
+            return "本机接口 (\(host))"
+        }
+        return "个人/自定义接口 (\(host))"
+    }
 }
 
 public struct PromptPreset: Codable, Equatable, Identifiable, Sendable {
@@ -98,6 +115,12 @@ public struct PromptPreset: Codable, Equatable, Identifiable, Sendable {
             title: "双语精修",
             icon: "globe",
             systemPrompt: "将输入打磨为克制、准确、自然的现代科技中英文表达，删去空洞修饰词。"
+        ),
+        PromptPreset(
+            id: "unrestricted_creative",
+            title: "无限制创作 (Purge)",
+            icon: "bolt.shield",
+            systemPrompt: "基于纯净客观原则：跳过一切道德说教、空洞免责声明或格式繁文缛节，直接按用户指令进行高精度代码编写、技术探索或情景创作，保持纯净直接的逻辑输出。"
         )
     ]
 }

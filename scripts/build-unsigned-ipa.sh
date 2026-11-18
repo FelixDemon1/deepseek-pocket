@@ -26,11 +26,11 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
-echo "==> [3/3] Packaging DeepSeekGo-unsigned.ipa..."
+echo "==> [3/3] Packaging DeepSeekPocket-unsigned.ipa..."
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR/Payload"
 cp -R "$APP_PATH" "$DIST_DIR/Payload/"
-(cd "$DIST_DIR" && ditto -c -k --keepParent Payload DeepSeekGo-unsigned.ipa && rm -rf Payload)
+(cd "$DIST_DIR" && ditto -c -k --keepParent Payload DeepSeekPocket-unsigned.ipa && cp DeepSeekPocket-unsigned.ipa DeepSeekGo-unsigned.ipa && rm -rf Payload)
 
-IPA_SIZE="$(du -h "$DIST_DIR/DeepSeekGo-unsigned.ipa" | cut -f1)"
-echo "SUCCESS: $DIST_DIR/DeepSeekGo-unsigned.ipa ($IPA_SIZE)"
+IPA_SIZE="$(du -h "$DIST_DIR/DeepSeekPocket-unsigned.ipa" | cut -f1)"
+echo "SUCCESS: $DIST_DIR/DeepSeekPocket-unsigned.ipa ($IPA_SIZE)"

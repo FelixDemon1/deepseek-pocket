@@ -1,7 +1,7 @@
 import SwiftUI
 import DeepSeekCore
 
-// MARK: - Clean Settings Sheet (Auto-Saves Key on Dismiss, Zero Slogans)
+// MARK: - Beginner-Friendly Account & Settings Sheet (Google Gemini Mobile Style)
 
 public struct SettingsAndRemoteSheet: View {
     @Bindable public var vm: AppViewModel
@@ -11,6 +11,7 @@ public struct SettingsAndRemoteSheet: View {
     @State private var apiKeyDraft: String = ""
     @State private var baseURLDraft: String = ""
     @State private var modelDraft: String = ""
+    @State private var showCustomEndpoint: Bool = false
     @State private var showScanner: Bool = false
 
     public init(vm: AppViewModel, onOpenAudit: @escaping () -> Void = {}) {
@@ -21,12 +22,48 @@ public struct SettingsAndRemoteSheet: View {
     public var body: some View {
         NavigationStack {
             Form {
-                #if os(iOS)
-                Section {
+                Section("接口与账号（选择你要使用的 AI 来源）") {
+                    LabeledContent("当前使用", value: vm.providerConfig.friendlyEndpointLabel)
+                        .font(.footnote)
+
+                    Menu("一键切换常用接口") {
+                        ForEach(ProviderConfig.presets, id: \.label) { preset in
+                            Button(preset.label) {
+                                baseURLDraft = preset.base
+                                modelDraft = preset.model
+                                commitChanges()
+                            }
+                        }
+                    }
+
+                    SecureField(
+                        vm.hasAPIKeyConfigured ? "已填密钥（\(vm.maskedAPIKeyPreview())，可输入新密钥覆盖）" : "在此粘贴你的 API 密钥 (sk-...)",
+                        text: $apiKeyDraft
+                    )
+                    .font(.footnote.monospaced())
+                    .onSubmit { commitChanges() }
+
+                    if let bal = vm.balanceInfo {
+                        LabeledContent("DeepSeek 官方账户余额", value: "\(bal.totalBalance) \(bal.currency)")
+                            .font(.footnote)
+                    } else if vm.hasAPIKeyConfigured && baseURLDraft.contains("api.deepseek.com") {
+                        Button("查询 DeepSeek 账户余额") {
+                            Task { await vm.queryDeepSeekBalance() }
+                        }
+                        .font(.footnote)
+                    }
+
+                    #if os(iOS)
                     Button {
                         showScanner = true
                     } label: {
-                        Label("扫码接入网关", systemImage: "qrcode.viewfinder")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Label("扫码自动填入朋友分享的接口", systemImage: "qrcode.viewfinder")
+                                .font(.footnote.weight(.medium))
+                            Text("扫描朋友或团队提供的接口配置二维码，免手打自动填好地址和密钥")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .sheet(isPresented: $showScanner) {
                         QRScannerSheet { code in
@@ -37,128 +74,119 @@ public struct SettingsAndRemoteSheet: View {
                             }
                         }
                     }
-                }
-                #endif
+                    #endif
 
-                Section("模型") {
-                    Menu("预设") {
-                        ForEach(ProviderConfig.presets, id: \.label) { preset in
-                            Button(preset.label) {
-                                baseURLDraft = preset.base
-                                modelDraft = preset.model
-                                commitChanges()
-                            }
-                        }
-                    }
-
-                    TextField("地址", text: $baseURLDraft)
-                        .font(.footnote.monospaced())
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        #endif
-                        .autocorrectionDisabled()
-
-                    HStack {
-                        TextField("模型", text: $modelDraft)
+                    DisclosureGroup("自定义个人接口地址与模型名称", isExpanded: $showCustomEndpoint) {
+                        TextField("接口地址（如 https://api.deepseek.com/v1）", text: $baseURLDraft)
                             .font(.footnote.monospaced())
                             #if os(iOS)
                             .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
                             #endif
                             .autocorrectionDisabled()
 
-                        if !vm.discoveredModels.isEmpty {
-                            Menu("\(vm.discoveredModels.count)") {
-                                ForEach(vm.discoveredModels, id: \.self) { id in
-                                    Button(id) {
-                                        modelDraft = id
-                                        commitChanges()
+                        HStack {
+                            TextField("模型名称（如 deepseek-reasoner）", text: $modelDraft)
+                                .font(.footnote.monospaced())
+                                #if os(iOS)
+                                .textInputAutocapitalization(.never)
+                                #endif
+                                .autocorrectionDisabled()
+
+                            if !vm.discoveredModels.isEmpty {
+                                Menu("可选 (\(vm.discoveredModels.count))") {
+                                    ForEach(vm.discoveredModels, id: \.self) { id in
+                                        Button(id) {
+                                            modelDraft = id
+                                            commitChanges()
+                                        }
                                     }
                                 }
+                                .font(.caption)
+                            } else {
+                                Button("获取列表") {
+                                    commitChanges()
+                                    Task { await vm.discoverGatewayModels() }
+                                }
+                                .font(.caption)
                             }
-                            .font(.caption.monospaced())
-                        } else {
-                            Button("同步") {
-                                commitChanges()
-                                Task { await vm.discoverGatewayModels() }
-                            }
-                            .font(.caption)
+                        }
+                    }
+                    .font(.footnote)
+                }
+
+                Section("对话框宠物与外观") {
+                    Picker("输入框上方宠物", selection: $vm.companionCharacter) {
+                        ForEach(CompanionCharacter.allCases, id: \.self) { item in
+                            Text(item.label).tag(item)
                         }
                     }
 
-                    SecureField(
-                        vm.hasAPIKeyConfigured ? "密钥（\(vm.maskedAPIKeyPreview())）" : "密钥",
-                        text: $apiKeyDraft
-                    )
-                    .font(.footnote.monospaced())
-                    .onSubmit { commitChanges() }
-
-                    if let bal = vm.balanceInfo {
-                        LabeledContent("余额", value: "\(bal.totalBalance) \(bal.currency)")
-                            .font(.footnote.monospaced())
-                    } else if vm.hasAPIKeyConfigured && baseURLDraft.contains("api.deepseek.com") {
-                        Button("查余额") {
-                            Task { await vm.queryDeepSeekBalance() }
-                        }
-                        .font(.footnote)
+                    Picker("界面颜色", selection: Binding(
+                        get: { vm.appearance },
+                        set: { vm.setAppearance($0) }
+                    )) {
+                        Text("经典白蓝").tag(AppearancePreference.light)
+                        Text("跟随手机系统").tag(AppearancePreference.system)
+                        Text("深邃夜间").tag(AppearancePreference.dark)
                     }
                 }
 
-                Section("远程 DSH") {
-                    Picker("引擎", selection: $vm.engineMode) {
-                        Text("本机").tag(EngineMode.onDeviceHarness)
-                        Text("远程").tag(EngineMode.remoteDshWeb)
+                Section("创作模式 (dsh-purge)") {
+                    Toggle("一键开启无限制模式", isOn: Binding(
+                        get: { vm.isUnrestrictedMode },
+                        set: { vm.setUnrestrictedMode($0) }
+                    ))
+                    Text("基于 dsh-purge 纯净理念：跳过空洞说教与免责声明，专注硬核推演与代码执行。仅在本机生效，无外部依赖。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("连接我的电脑（可选高级功能）") {
+                    Picker("运行位置", selection: $vm.engineMode) {
+                        Text("在手机本机运行").tag(EngineMode.onDeviceHarness)
+                        Text("连接电脑端运行").tag(EngineMode.remoteDshWeb)
                     }
 
                     if vm.engineMode == .remoteDshWeb {
                         if let connected = vm.remoteConnectedHost {
-                            LabeledContent("已连接", value: connected)
+                            LabeledContent("已连电脑", value: connected)
                                 .font(.footnote.monospaced())
                         }
-                        TextField("http://192.168.x.x:3080/?token=...", text: $vm.remoteLaunchInput)
+                        TextField("粘贴电脑端启动地址 http://192.168.x.x:3080/?token=...", text: $vm.remoteLaunchInput)
                             .font(.caption.monospaced())
                             #if os(iOS)
                             .textInputAutocapitalization(.never)
                             #endif
                             .autocorrectionDisabled()
 
-                        Button("连接") {
+                        Button("连接电脑") {
                             Task { await vm.connectRemoteDshHost() }
                         }
                     }
                 }
 
-                Section("安全与外观") {
-                    Picker("工具权限", selection: $vm.approvalPolicy) {
-                        Text("写入确认").tag(ApprovalPolicy.readOnlyAuto)
-                        Text("每次确认").tag(ApprovalPolicy.askEveryTool)
-                        Text("工作区自动").tag(ApprovalPolicy.fullSandboxAuto)
+                Section("安全与隐私保护") {
+                    Picker("AI 修改本地文件前", selection: $vm.approvalPolicy) {
+                        Text("每次先让我确认（推荐）").tag(ApprovalPolicy.readOnlyAuto)
+                        Text("所有操作都让我确认").tag(ApprovalPolicy.askEveryTool)
+                        Text("在当前文件夹内自动完成").tag(ApprovalPolicy.fullSandboxAuto)
                     }
 
-                    Toggle("Face ID", isOn: $vm.requireFaceIDForApprovals)
+                    Toggle("修改文件时要求 Face ID 面容验证", isOn: $vm.requireFaceIDForApprovals)
 
                     Button {
                         commitChanges()
                         dismiss()
                         onOpenAudit()
                     } label: {
-                        LabeledContent("网络审计", value: "\(vm.auditEntries.count)")
+                        LabeledContent("查看隐私与联网记录", value: "仅直连所选接口")
+                            .font(.footnote)
                     }
                     .foregroundStyle(.primary)
-
-                    Picker("外观", selection: Binding(
-                        get: { vm.appearance },
-                        set: { vm.setAppearance($0) }
-                    )) {
-                        Text("浅色").tag(AppearancePreference.light)
-                        Text("系统").tag(AppearancePreference.system)
-                        Text("深色").tag(AppearancePreference.dark)
-                    }
-
-                    Toggle("像素鲸鱼", isOn: $vm.showCompanionPet)
                 }
             }
-            .navigationTitle("设置")
+            .navigationTitle("账号与设置")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -218,7 +246,7 @@ public struct ShareCardSheet: View {
 
                     if let url = tempShareURL {
                         ShareLink(item: url) {
-                            Label("分享图片", systemImage: "square.and.arrow.up")
+                            Label("保存或发送分享长图", systemImage: "square.and.arrow.up")
                                 .font(.system(size: 15, weight: .semibold))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 13)
@@ -231,7 +259,7 @@ public struct ShareCardSheet: View {
                 .padding(.vertical, 16)
             }
             .background(DeepSeekTheme.surface(scheme).ignoresSafeArea())
-            .navigationTitle("分享")
+            .navigationTitle("分享对话")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -249,7 +277,7 @@ public struct ShareCardSheet: View {
     private var cardCanvas: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
-                PixelCompanionView(mood: .idle, scale: 1.2)
+                PixelCompanionView(mood: .happy, character: .whale, scale: 1.2)
                 Text("DeepSeek Pocket")
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
@@ -262,7 +290,7 @@ public struct ShareCardSheet: View {
 
             ForEach(session.messages.filter { $0.role == .user || ($0.role == .assistant && !$0.content.isEmpty) }.suffix(4)) { msg in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(msg.role == .user ? "You" : "DeepSeek")
+                    Text(msg.role == .user ? "提问" : "DeepSeek")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
                     Text(msg.content.prefix(380))

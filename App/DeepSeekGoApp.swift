@@ -23,6 +23,12 @@ struct DeepSeekGoApp: App {
                     #endif
                     if CommandLine.arguments.contains("--demo") {
                         viewModel.runInteractiveShowcase()
+                    } else if CommandLine.arguments.contains("--models") {
+                        viewModel.requestedSheetName = "models"
+                    } else if CommandLine.arguments.contains("--settings") {
+                        viewModel.requestedSheetName = "settings"
+                    } else if CommandLine.arguments.contains("--presets") {
+                        viewModel.requestedSheetName = "presets"
                     } else if let pendingPrompt = QuickPromptBridge.shared.consumePendingPrompt() {
                         viewModel.sendOrSteer(text: pendingPrompt)
                     }

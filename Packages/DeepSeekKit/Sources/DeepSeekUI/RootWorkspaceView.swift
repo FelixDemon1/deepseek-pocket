@@ -1,11 +1,10 @@
 import SwiftUI
 import DeepSeekCore
 
-/// Linear / Apple Notes Minimalist Workspace Shell.
-/// Zero slogans, zero secondary labels, single-enum modal routing.
+/// Google Gemini Mobile-inspired Minimalist Workspace Shell.
 public struct RootWorkspaceView: View {
     public enum ActiveSheet: String, Identifiable {
-        case sessions, workspace, presets, settings, audit, share, scanner
+        case sessions, modelPicker, workspace, presets, settings, audit, share
         public var id: String { rawValue }
     }
 
@@ -33,7 +32,7 @@ public struct RootWorkspaceView: View {
             canvas.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                header(ink: ink, secondary: secondary)
+                geminiHeader(scheme: scheme, ink: ink, secondary: secondary)
 
                 if let banner = vm.errorBanner ?? vm.noticeBanner {
                     HStack(spacing: 8) {
@@ -67,7 +66,6 @@ public struct RootWorkspaceView: View {
                     vm: vm,
                     onOpenWorkspace: { activeSheet = .workspace },
                     onOpenPresets: { activeSheet = .presets },
-                    onOpenScanner: { activeSheet = .scanner },
                     onRequireSetup: { activeSheet = .settings }
                 )
             }
@@ -76,7 +74,11 @@ public struct RootWorkspaceView: View {
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
             case .sessions:
-                sessionsSheet
+                geminiDrawerSheet(scheme: scheme, ink: ink, secondary: secondary)
+            case .modelPicker:
+                geminiModelHalfSheet(scheme: scheme, ink: ink, secondary: secondary)
+                    .presentationDetents([.height(370)])
+                    .presentationDragIndicator(.visible)
             case .workspace:
                 WorkspaceBrowserSheet(vm: vm)
             case .presets:
@@ -89,68 +91,73 @@ public struct RootWorkspaceView: View {
                 if let session = vm.activeSession {
                     ShareCardSheet(session: session)
                 }
-            case .scanner:
-                #if os(iOS)
-                QRScannerSheet { code in
-                    if let url = URL(string: code) {
-                        vm.handleSetupURL(url)
-                    }
-                }
-                #else
-                EmptyView()
-                #endif
             }
         }
         .sheet(item: $vm.activeArtifact) { artifact in
             ArtifactSandboxSheet(artifact: artifact)
         }
+        .onAppear {
+            if let name = vm.requestedSheetName {
+                switch name {
+                case "models": activeSheet = .modelPicker
+                case "settings": activeSheet = .settings
+                case "presets": activeSheet = .presets
+                case "drawer": activeSheet = .sessions
+                default: break
+                }
+                vm.requestedSheetName = nil
+            }
+        }
+        .onChange(of: vm.requestedSheetName) { name in
+            guard let name else { return }
+            switch name {
+            case "models": activeSheet = .modelPicker
+            case "settings": activeSheet = .settings
+            case "presets": activeSheet = .presets
+            case "drawer": activeSheet = .sessions
+            default: break
+            }
+            vm.requestedSheetName = nil
+        }
     }
 
-    // MARK: - Header (Apple Notes / Linear Purity: Single-Line, Zero Subtitles)
+    // MARK: - Google Gemini Mobile Top Navigation Bar
 
-    private func header(ink: Color, secondary: Color) -> some View {
-        HStack(spacing: 12) {
+    private func geminiHeader(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
+        HStack(spacing: 10) {
+            // Left: Gemini staggered menu icon -> opens History & Navigation Drawer
             Button {
                 activeSheet = .sessions
             } label: {
-                Image(systemName: "sidebar.left")
-                    .font(.system(size: 17, weight: .regular))
-                    .foregroundStyle(ink)
-                    .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 4.5) {
+                    Capsule()
+                        .fill(ink)
+                        .frame(width: 18, height: 1.8)
+                    Capsule()
+                        .fill(ink.opacity(0.75))
+                        .frame(width: 13, height: 1.8)
+                }
+                .frame(width: 36, height: 36)
+                .background(Circle().fill(DeepSeekTheme.surface(scheme)))
             }
             .buttonStyle(.plain)
 
             Spacer()
 
-            Menu {
-                ForEach(ProviderConfig.presets, id: \.label) { preset in
-                    Button {
-                        if let url = URL(string: preset.base) {
-                            var next = vm.providerConfig
-                            next.baseURL = url
-                            next.model = preset.model
-                            vm.updateProviderConfig(next)
-                            vm.engineMode = .onDeviceHarness
-                        }
-                    } label: {
-                        if vm.providerConfig.model == preset.model && vm.providerConfig.baseURL.absoluteString == preset.base {
-                            Label(preset.label, systemImage: "checkmark")
-                        } else {
-                            Text(preset.label)
-                        }
-                    }
-                }
-                Divider()
-                Button {
-                    activeSheet = .settings
-                } label: {
-                    Label("设置", systemImage: "slider.horizontal.3")
-                }
+            // Center: Gemini-style Model Switcher Pill -> opens bottom half-sheet
+            Button {
+                activeSheet = .modelPicker
             } label: {
-                HStack(spacing: 4) {
-                    Text(vm.shortModelTitle)
-                        .font(.system(size: 15, weight: .semibold))
+                HStack(spacing: 5) {
+                    Text("DeepSeek")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(ink)
+                    Text(vm.shortModelTitle)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(DeepSeekTheme.brandBlue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(DeepSeekTheme.brandSoftFill(scheme)))
                     Image(systemName: "chevron.down")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(secondary)
@@ -158,52 +165,72 @@ public struct RootWorkspaceView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
             }
+            .buttonStyle(.plain)
 
             Spacer()
 
-            if vm.showCompanionPet && !(vm.activeSession?.messages.filter { $0.role != .system }.isEmpty ?? true) {
-                PixelCompanionView(mood: vm.companionMood, scale: 1.35)
-            }
+            // Right: Gemini New Chat + Profile/Settings Avatar Circle
+            HStack(spacing: 8) {
+                if !(vm.activeSession?.messages.filter { $0.role != .system }.isEmpty ?? true) {
+                    Button {
+                        vm.createNewSession()
+                    } label: {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(ink)
+                            .frame(width: 34, height: 34)
+                            .background(Circle().fill(DeepSeekTheme.surface(scheme)))
+                    }
+                    .buttonStyle(.plain)
+                }
 
-            Button {
-                vm.createNewSession()
-            } label: {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 17, weight: .regular))
-                    .foregroundStyle(ink)
-                    .frame(width: 34, height: 34)
+                Button {
+                    activeSheet = .settings
+                } label: {
+                    ZStack(alignment: .bottomTrailing) {
+                        Circle()
+                            .fill(DeepSeekTheme.brandSoftFill(scheme))
+                            .frame(width: 34, height: 34)
+                            .overlay(
+                                Image(systemName: "person.fill")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(DeepSeekTheme.brandBlue)
+                            )
+
+                        Circle()
+                            .fill(vm.hasAPIKeyConfigured ? DeepSeekTheme.diffAdded : Color.orange)
+                            .frame(width: 8, height: 8)
+                            .overlay(Circle().stroke(DeepSeekTheme.canvas(scheme), lineWidth: 1.5))
+                    }
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 14)
         .padding(.vertical, 6)
     }
 
-    // MARK: - Body (Pure Canvas, Zero Slogans)
+    // MARK: - Body
 
     @ViewBuilder
     private func chatBody(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
         let visibleMessages = (vm.activeSession?.messages ?? []).filter { $0.role != .system }
         if visibleMessages.isEmpty {
-            VStack(spacing: 24) {
+            VStack(spacing: 22) {
                 Spacer()
 
-                if vm.showCompanionPet {
-                    PixelCompanionView(mood: vm.companionMood, scale: 3.6)
-                }
+                PixelCompanionView(mood: vm.companionMood, character: .whale, scale: 3.4)
 
                 HStack(spacing: 8) {
-                    quietActionPill(scheme: scheme, title: "演示", icon: "play") {
+                    quietActionPill(scheme: scheme, title: "体验演示", icon: "play") {
                         vm.runInteractiveShowcase()
                     }
-                    quietActionPill(scheme: scheme, title: "工作区", icon: "folder") {
+                    quietActionPill(scheme: scheme, title: "本地文件", icon: "folder") {
                         activeSheet = .workspace
                     }
-                    #if os(iOS)
-                    quietActionPill(scheme: scheme, title: "扫码", icon: "qrcode") {
-                        activeSheet = .scanner
+                    quietActionPill(scheme: scheme, title: "回答风格", icon: "sparkles") {
+                        activeSheet = .presets
                     }
-                    #endif
                 }
 
                 Spacer()
@@ -265,64 +292,169 @@ public struct RootWorkspaceView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Apple-Notes-Style Clean Sidebar
+    // MARK: - Google Gemini Mobile Bottom Half-Sheet Model Switcher
 
-    private var sessionsSheet: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Button {
-                        activeSheet = .workspace
-                    } label: {
-                        Label("工作区", systemImage: "folder")
-                    }
-                    Button {
-                        activeSheet = .presets
-                    } label: {
-                        HStack {
-                            Label("规则", systemImage: "slider.horizontal.3")
-                            Spacer()
-                            Text(vm.activePreset.title)
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Button {
-                        activeSheet = .settings
-                    } label: {
-                        Label("设置", systemImage: "gearshape")
-                    }
+    private func geminiModelHalfSheet(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("选择对话模型")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(ink)
+                Spacer()
+                Button("接口设置") {
+                    activeSheet = .settings
+                }
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(DeepSeekTheme.brandBlue)
+            }
+            .padding(.top, 18)
+
+            VStack(spacing: 8) {
+                geminiModelOptionRow(
+                    scheme: scheme,
+                    title: "DeepSeek R1 · 深度思考",
+                    subtitle: "适合写代码、复杂推理与多步任务（官方 API）",
+                    selected: vm.providerConfig.model == "deepseek-reasoner" && vm.providerConfig.baseURL.host == "api.deepseek.com"
+                ) {
+                    var next = vm.providerConfig
+                    next.baseURL = URL(string: "https://api.deepseek.com/v1")!
+                    next.model = "deepseek-reasoner"
+                    vm.updateProviderConfig(next)
+                    activeSheet = nil
                 }
 
-                Section {
-                    ForEach(vm.filteredSessions) { session in
-                        Button {
-                            vm.activeSessionId = session.id
-                            activeSheet = nil
-                        } label: {
-                            HStack {
-                                Text(session.title)
-                                    .font(.subheadline.weight(session.id == vm.activeSessionId ? .semibold : .regular))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Spacer()
-                                if session.id == vm.activeSessionId {
-                                    Circle()
-                                        .fill(DeepSeekTheme.brandBlue)
-                                        .frame(width: 6, height: 6)
+                geminiModelOptionRow(
+                    scheme: scheme,
+                    title: "DeepSeek V3 · 快速回答",
+                    subtitle: "日常对话响应更快（官方 API）",
+                    selected: vm.providerConfig.model == "deepseek-chat" && vm.providerConfig.baseURL.host == "api.deepseek.com"
+                ) {
+                    var next = vm.providerConfig
+                    next.baseURL = URL(string: "https://api.deepseek.com/v1")!
+                    next.model = "deepseek-chat"
+                    vm.updateProviderConfig(next)
+                    activeSheet = nil
+                }
+
+                geminiModelOptionRow(
+                    scheme: scheme,
+                    title: "免费体验通道 (OpenRouter R1)",
+                    subtitle: "无需充值即可免费使用 R1 推理模型",
+                    selected: vm.providerConfig.baseURL.host?.contains("openrouter.ai") == true
+                ) {
+                    var next = vm.providerConfig
+                    next.baseURL = URL(string: "https://openrouter.ai/api/v1")!
+                    next.model = "deepseek/deepseek-r1:free"
+                    vm.updateProviderConfig(next)
+                    activeSheet = nil
+                }
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .background(DeepSeekTheme.canvas(scheme).ignoresSafeArea())
+    }
+
+    private func geminiModelOptionRow(
+        scheme: ColorScheme,
+        title: String,
+        subtitle: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(DeepSeekTheme.secondaryInk(scheme))
+                }
+                Spacer()
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 18))
+                    .foregroundStyle(selected ? DeepSeekTheme.brandBlue : DeepSeekTheme.secondaryInk(scheme).opacity(0.4))
+            }
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(selected ? DeepSeekTheme.brandSoftFill(scheme) : DeepSeekTheme.surface(scheme))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Google Gemini Mobile Navigation Drawer Sheet
+
+    private func geminiDrawerSheet(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                // Gemini-style Top New Chat Pill + Quick Features
+                VStack(spacing: 10) {
+                    Button {
+                        vm.createNewSession()
+                        activeSheet = nil
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 14, weight: .semibold))
+                            Text("发起新对话")
+                                .font(.system(size: 15, weight: .semibold))
+                            Spacer()
+                        }
+                        .foregroundStyle(DeepSeekTheme.brandBlue)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(
+                            Capsule().fill(DeepSeekTheme.brandSoftFill(scheme))
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    HStack(spacing: 8) {
+                        drawerFeatureChip(scheme: scheme, title: "我的本地文件", icon: "folder") {
+                            activeSheet = .workspace
+                        }
+                        drawerFeatureChip(scheme: scheme, title: "回答风格：\(vm.activePreset.title)", icon: "sparkles") {
+                            activeSheet = .presets
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+
+                List {
+                    Section("近期对话") {
+                        ForEach(vm.filteredSessions) { session in
+                            Button {
+                                vm.activeSessionId = session.id
+                                activeSheet = nil
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "bubble.left")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(session.id == vm.activeSessionId ? DeepSeekTheme.brandBlue : .secondary)
+                                    Text(session.title)
+                                        .font(.subheadline.weight(session.id == vm.activeSessionId ? .semibold : .regular))
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Spacer()
                                 }
                             }
                         }
-                    }
-                    .onDelete { offsets in
-                        let list = vm.filteredSessions
-                        for idx in offsets {
-                            vm.deleteSession(list[idx].id)
+                        .onDelete { offsets in
+                            let list = vm.filteredSessions
+                            for idx in offsets {
+                                vm.deleteSession(list[idx].id)
+                            }
                         }
                     }
                 }
+                .searchable(text: $vm.sessionSearchQuery, prompt: "搜索历史对话")
             }
-            .searchable(text: $vm.sessionSearchQuery, prompt: "搜索")
             .navigationTitle("DeepSeek Pocket")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -333,5 +465,26 @@ public struct RootWorkspaceView: View {
                 }
             }
         }
+    }
+
+    private func drawerFeatureChip(scheme: ColorScheme, title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                Spacer()
+            }
+            .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(DeepSeekTheme.surface(scheme))
+            )
+        }
+        .buttonStyle(.plain)
     }
 }

@@ -47,6 +47,8 @@ public final class AppViewModel {
     public var allowlistInfo: (modelHosts: [String], remoteHosts: [String], webHosts: [String]) = ([], [], [])
     public var activeArtifact: ArtifactPayload?
     public var showCompanionPet: Bool = true
+    public var companionCharacter: CompanionCharacter = .whaleGirl
+    public var requestedSheetName: String?
     public var celebratingTurnCompletion: Bool = false
 
     public let firewall: PrivacyFirewall
@@ -262,6 +264,24 @@ public final class AppViewModel {
         presets.append(custom)
         saveCustomPresets()
         _ = selectPreset(custom)
+    }
+
+    public var isUnrestrictedMode: Bool {
+        activePresetId == "unrestricted_creative"
+    }
+
+    public func setUnrestrictedMode(_ enabled: Bool) {
+        if enabled {
+            if let p = presets.first(where: { $0.id == "unrestricted_creative" }) {
+                _ = selectPreset(p)
+                noticeBanner = "已开启无限制创作模式 (dsh-purge)"
+            }
+        } else {
+            if let p = presets.first(where: { $0.id == "default_agent" }) {
+                _ = selectPreset(p)
+                noticeBanner = "已恢复默认回答风格"
+            }
+        }
     }
 
     private func applyActivePresetToCurrentSession() {

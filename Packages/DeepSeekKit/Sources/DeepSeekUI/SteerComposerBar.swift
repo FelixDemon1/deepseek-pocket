@@ -2,13 +2,12 @@ import SwiftUI
 import PhotosUI
 import DeepSeekCore
 
-/// Linear / Apple Notes Minimalist Composer Capsule.
+/// Google Gemini-inspired Floating Composer with the Pixel Whale-Girl perched right on top of the dialog box.
 public struct SteerComposerBar: View {
     @Binding public var text: String
     @Bindable public var vm: AppViewModel
     public var onOpenWorkspace: () -> Void
     public var onOpenPresets: () -> Void
-    public var onOpenScanner: () -> Void
     public var onRequireSetup: () -> Void
 
     @Environment(\.colorScheme) private var scheme
@@ -21,14 +20,12 @@ public struct SteerComposerBar: View {
         vm: AppViewModel,
         onOpenWorkspace: @escaping () -> Void = {},
         onOpenPresets: @escaping () -> Void = {},
-        onOpenScanner: @escaping () -> Void = {},
         onRequireSetup: @escaping () -> Void = {}
     ) {
         self._text = text
         self.vm = vm
         self.onOpenWorkspace = onOpenWorkspace
         self.onOpenPresets = onOpenPresets
-        self.onOpenScanner = onOpenScanner
         self.onRequireSetup = onRequireSetup
     }
 
@@ -37,22 +34,36 @@ public struct SteerComposerBar: View {
         let secondary = DeepSeekTheme.secondaryInk(scheme)
         let canvas = DeepSeekTheme.canvas(scheme)
 
-        VStack(spacing: 6) {
-            if !vm.queuedSteers.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(vm.queuedSteers) { item in
-                            Text(item.text)
-                                .font(.system(size: 12))
-                                .foregroundStyle(secondary)
-                                .lineLimit(1)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(Capsule().fill(DeepSeekTheme.surface(scheme)))
+        VStack(spacing: 0) {
+            // Pixel Whale-Girl / Blue Whale perched right on the top edge of the input dialog box!
+            if vm.showCompanionPet && vm.companionCharacter != .hidden {
+                HStack {
+                    if !vm.queuedSteers.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(vm.queuedSteers) { item in
+                                    Text("补充：\(item.text)")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(secondary)
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 4)
+                                        .background(Capsule().fill(DeepSeekTheme.surface(scheme)))
+                                }
+                            }
                         }
                     }
-                    .padding(.horizontal, 16)
+                    Spacer()
+                    PixelCompanionView(
+                        mood: vm.companionMood,
+                        character: vm.companionCharacter,
+                        scale: 2.2,
+                        showStatusBubble: true
+                    )
+                    .padding(.trailing, 24)
+                    .offset(y: 4)
                 }
+                .zIndex(1)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -79,7 +90,7 @@ public struct SteerComposerBar: View {
                 }
 
                 TextField(
-                    vm.isStreaming ? "补充…" : "发消息",
+                    vm.isStreaming ? "中途插话补充…" : "问问 DeepSeek…",
                     text: $text,
                     axis: .vertical
                 )
@@ -93,19 +104,14 @@ public struct SteerComposerBar: View {
                 HStack(spacing: 8) {
                     Menu {
                         Button { showPhotoPicker = true } label: {
-                            Label("图片", systemImage: "photo")
+                            Label("识图提问（选相册图片）", systemImage: "photo")
                         }
                         Button(action: onOpenWorkspace) {
-                            Label("文件", systemImage: "folder")
+                            Label("我的本地文件", systemImage: "folder")
                         }
                         Button(action: onOpenPresets) {
-                            Label("规则", systemImage: "slider.horizontal.3")
+                            Label("回答风格：\(vm.activePreset.title)", systemImage: "sparkles")
                         }
-                        #if os(iOS)
-                        Button(action: onOpenScanner) {
-                            Label("扫码", systemImage: "qrcode")
-                        }
-                        #endif
                     } label: {
                         Image(systemName: "plus")
                             .font(.system(size: 15, weight: .medium))
@@ -115,13 +121,13 @@ public struct SteerComposerBar: View {
                     }
 
                     let isR1 = vm.providerConfig.model.lowercased().contains("reasoner") || vm.providerConfig.model.lowercased().contains("r1")
-                    toggleChip(title: "R1", icon: "sparkles", active: isR1, scheme: scheme, secondary: secondary) {
+                    toggleChip(title: "深度思考", icon: "sparkles", active: isR1, scheme: scheme, secondary: secondary) {
                         var next = vm.providerConfig
                         next.model = isR1 ? "deepseek-chat" : "deepseek-reasoner"
                         vm.updateProviderConfig(next)
                     }
 
-                    toggleChip(title: "工具", icon: "terminal", active: vm.providerConfig.enableTools, scheme: scheme, secondary: secondary) {
+                    toggleChip(title: "读写文件", icon: "folder", active: vm.providerConfig.enableTools, scheme: scheme, secondary: secondary) {
                         var next = vm.providerConfig
                         next.enableTools.toggle()
                         vm.updateProviderConfig(next)
@@ -200,14 +206,14 @@ public struct SteerComposerBar: View {
                         text = ""
                         vm.sendOrSteer(text: msg, steerMode: .nextStep)
                     } label: {
-                        Label("下一步合并", systemImage: "text.insert")
+                        Label("当前步骤后补充", systemImage: "text.insert")
                     }
                     Button {
                         let msg = text
                         text = ""
                         vm.sendOrSteer(text: msg, steerMode: .interruptNow)
                     } label: {
-                        Label("立即转向", systemImage: "bolt")
+                        Label("立即打断并重答", systemImage: "bolt")
                     }
                 } label: {
                     Image(systemName: "arrow.up")
