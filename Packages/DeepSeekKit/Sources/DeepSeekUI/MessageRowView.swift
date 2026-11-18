@@ -154,10 +154,10 @@ public struct MessageRowView: View {
                         .foregroundStyle(DeepSeekTheme.brandBlue)
                     Text(
                         message.reasoningDurationSec != nil
-                            ? String(format: "已深度思考 %.1f 秒", message.reasoningDurationSec!)
-                            : "正在深度思考…"
+                            ? String(format: "%.1fs", message.reasoningDurationSec!)
+                            : "…"
                     )
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 13, weight: .medium, design: .monospaced))
                     Image(systemName: reasoningExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 10, weight: .semibold))
                 }
@@ -208,7 +208,7 @@ public struct MessageRowView: View {
                         if requireFaceID {
                             Image(systemName: "faceid")
                         }
-                        Text(requireFaceID ? "验证并允许" : "允许执行")
+                        Text("允许")
                     }
                     .font(.system(size: 13, weight: .semibold))
                     .frame(maxWidth: .infinity)
@@ -221,7 +221,7 @@ public struct MessageRowView: View {
                 Button {
                     onApprove(false)
                 } label: {
-                    Text("拒绝")
+                    Text("取消")
                         .font(.system(size: 13, weight: .medium))
                         .padding(.horizontal, 18)
                         .padding(.vertical, 9)
@@ -304,14 +304,9 @@ public struct MessageRowView: View {
                                     .font(.system(size: 15, weight: .medium))
                                     .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
                             )
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(artifact.title)
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
-                            Text("可交互预览 · 离线隔离沙盒")
-                                .font(.system(size: 12))
-                                .foregroundStyle(DeepSeekTheme.secondaryInk(scheme))
-                        }
+                        Text(artifact.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
                         Spacer()
                         Image(systemName: "arrow.up.right")
                             .font(.system(size: 13, weight: .medium))

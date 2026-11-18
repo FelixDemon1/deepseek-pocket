@@ -48,7 +48,8 @@ public struct DeepSeekClient: ModelStreamingTransport {
             let task = Task {
                 do {
                     let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmedKey.isEmpty else {
+                    let requiresKey = (config.baseURL.host?.lowercased() ?? "") == "api.deepseek.com"
+                    if requiresKey && trimmedKey.isEmpty {
                         throw DeepSeekClientError.missingAPIKey
                     }
 
@@ -58,7 +59,9 @@ public struct DeepSeekClient: ModelStreamingTransport {
                     request.timeoutInterval = 180
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+                    if !trimmedKey.isEmpty {
+                        request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+                    }
 
                     let schemas = includeWorkspaceTools ? WorkspaceToolset.toolSchemas : []
                     let body = Self.buildRequestPayload(config: config, messages: messages, tools: schemas)

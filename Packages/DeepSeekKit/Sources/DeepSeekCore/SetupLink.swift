@@ -12,7 +12,7 @@ public struct SetupLink: Equatable, Sendable {
     public var model: String
     public var name: String
 
-    public static let scheme = "deepseekgo"
+    public static let scheme = "deepseekpocket"
     public static let host = "setup"
 
     public init(
@@ -31,7 +31,7 @@ public struct SetupLink: Equatable, Sendable {
 
     public static func parse(_ url: URL) -> SetupLink? {
         let scheme = url.scheme?.lowercased() ?? ""
-        guard scheme == "tide" || scheme == "deepseekgo" || scheme == "dshgo" else { return nil }
+        guard scheme == "deepseekpocket" || scheme == "deepseekgo" || scheme == "tide" || scheme == "dshgo" else { return nil }
 
         let host = (url.host ?? "").lowercased()
         let path = url.path.lowercased()

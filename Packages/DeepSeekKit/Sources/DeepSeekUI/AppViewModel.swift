@@ -42,17 +42,15 @@ public final class AppViewModel {
     public var remoteConnectedHost: String?
     public var remoteSessions: [DshRemoteSessionSummary] = []
 
-    // Privacy, Workspace, Companion Pet & Pro Entitlement
+    // Privacy, Workspace & Companion Pet
     public var auditEntries: [NetworkAuditEntry] = []
     public var allowlistInfo: (modelHosts: [String], remoteHosts: [String], webHosts: [String]) = ([], [], [])
     public var activeArtifact: ArtifactPayload?
-    public var isProUnlocked: Bool = false
     public var showCompanionPet: Bool = true
     public var celebratingTurnCompletion: Bool = false
 
     public let firewall: PrivacyFirewall
     public var toolset: WorkspaceToolset
-    public let proManager: ProEntitlementManager
     private let ocrService = VisionOCRService()
     private let vault: SecretStore
     private let biometricGate = BiometricGate()
@@ -75,12 +73,10 @@ public final class AppViewModel {
         self.vault = vault
         self.firewall = firewall
         self.toolset = toolset
-        self.proManager = ProEntitlementManager()
         self.providerConfig = ProviderConfig()
         self.approvalPolicy = .readOnlyAuto
         self.requireFaceIDForApprovals = false
         self.engineMode = .onDeviceHarness
-        self.isProUnlocked = proManager.isProUnlocked
 
         loadPersistedState()
         seedWelcomeWorkspaceIfNeeded()
@@ -94,8 +90,6 @@ public final class AppViewModel {
 
         Task {
             await firewall.setAllowedModelBaseURL(providerConfig.baseURL)
-            await proManager.refreshEntitlements()
-            self.isProUnlocked = proManager.isProUnlocked
             await refreshAuditSnapshot()
         }
     }
@@ -120,10 +114,17 @@ public final class AppViewModel {
 
     public var shortModelTitle: String {
         let m = providerConfig.model.lowercased()
-        if engineMode == .remoteDshWeb { return "DSH Remote" }
-        if m.contains("reasoner") || m.contains("r1") { return "DeepSeek R1" }
-        if m.contains("chat") || m.contains("v3") { return "DeepSeek V3" }
+        if engineMode == .remoteDshWeb { return "DSH" }
+        if m.contains("reasoner") || m.contains("r1") { return "R1" }
+        if m.contains("chat") || m.contains("v3") { return "V3" }
         return providerConfig.model.components(separatedBy: "/").last ?? providerConfig.model
+    }
+
+    /// True when the active configuration requires an API key that has not been provided yet.
+    public var needsCredentialsBeforeSend: Bool {
+        guard engineMode == .onDeviceHarness else { return remoteClient == nil }
+        let isOfficial = (providerConfig.baseURL.host?.lowercased() ?? "") == "api.deepseek.com"
+        return isOfficial && !hasAPIKeyConfigured
     }
 
     public var companionMood: CompanionMood {
@@ -214,7 +215,7 @@ public final class AppViewModel {
         guard errorBanner == nil else { return false }
 
         discoveredModels = []
-        noticeBanner = "已接入「\(link.name)」，点「同步模型」即可开始对话"
+        noticeBanner = "已接入 \(link.name)"
         Task {
             await firewall.setAllowedModelBaseURL(link.baseURL)
             await refreshAuditSnapshot()
@@ -234,10 +235,8 @@ public final class AppViewModel {
         previousPresetSnapshotId != nil
     }
 
+    @discardableResult
     public func selectPreset(_ preset: PromptPreset) -> Bool {
-        if preset.isProOnly && !isProUnlocked {
-            return false
-        }
         previousPresetSnapshotId = activePresetId
         activePresetId = preset.id
         persistSettings()
@@ -253,14 +252,12 @@ public final class AppViewModel {
         applyActivePresetToCurrentSession()
     }
 
-    public func addCustomPreset(title: String, subtitle: String, systemPrompt: String) {
+    public func addCustomPreset(title: String, systemPrompt: String) {
         let custom = PromptPreset(
             id: "custom_\(UUID().uuidString.prefix(8))",
             title: title,
-            subtitle: subtitle.isEmpty ? "自定义工作流指令" : subtitle,
             icon: "slider.horizontal.below.rectangle",
-            systemPrompt: systemPrompt,
-            isProOnly: false
+            systemPrompt: systemPrompt
         )
         presets.append(custom)
         saveCustomPresets()
@@ -274,11 +271,6 @@ public final class AppViewModel {
         } else {
             sessions[idx].messages.insert(ChatMessage(role: .system, content: activePreset.systemPrompt), at: 0)
         }
-    }
-
-    public func togglePreviewProUnlock(_ enabled: Bool) {
-        proManager.setPreviewUnlock(enabled)
-        isProUnlocked = proManager.isProUnlocked
     }
 
     // MARK: - On-Device Vision OCR Attachment

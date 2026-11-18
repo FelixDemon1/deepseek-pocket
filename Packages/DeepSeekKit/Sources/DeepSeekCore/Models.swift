@@ -48,68 +48,56 @@ public struct ProviderConfig: Codable, Equatable, Sendable {
     }
 
     public static let presets: [(label: String, model: String, base: String)] = [
-        ("DeepSeek 官方 · R1 深度思考", "deepseek-reasoner", "https://api.deepseek.com/v1"),
-        ("DeepSeek 官方 · V3 极速对话", "deepseek-chat", "https://api.deepseek.com/v1"),
-        ("OpenRouter · R1 免费通道", "deepseek/deepseek-r1:free", "https://openrouter.ai/api/v1"),
-        ("SiliconFlow · 硅基流动", "deepseek-ai/DeepSeek-R1", "https://api.siliconflow.cn/v1"),
-        ("本机/局域网网关 (Ollama / OneAPI)", "deepseek-r1:14b", "http://127.0.0.1:11434/v1")
+        ("DeepSeek R1", "deepseek-reasoner", "https://api.deepseek.com/v1"),
+        ("DeepSeek V3", "deepseek-chat", "https://api.deepseek.com/v1"),
+        ("OpenRouter 免费 R1", "deepseek/deepseek-r1:free", "https://openrouter.ai/api/v1"),
+        ("SiliconFlow", "deepseek-ai/DeepSeek-R1", "https://api.siliconflow.cn/v1"),
+        ("本地 Ollama", "deepseek-r1:14b", "http://127.0.0.1:11434/v1")
     ]
 }
 
 public struct PromptPreset: Codable, Equatable, Identifiable, Sendable {
     public var id: String
     public var title: String
-    public var subtitle: String
     public var icon: String
     public var systemPrompt: String
-    public var isProOnly: Bool
 
     public init(
         id: String,
         title: String,
-        subtitle: String,
-        icon: String,
-        systemPrompt: String,
-        isProOnly: Bool = false
+        icon: String = "sparkles",
+        systemPrompt: String
     ) {
         self.id = id
         self.title = title
-        self.subtitle = subtitle
         self.icon = icon
         self.systemPrompt = systemPrompt
-        self.isProOnly = isProOnly
     }
 
     public static let builtIn: [PromptPreset] = [
         PromptPreset(
             id: "default_agent",
-            title: "标准全能工作台",
-            subtitle: "均衡推理、沙盒读写与结构化输出",
+            title: "默认",
             icon: "sparkles",
             systemPrompt: AgentHarness.defaultSystemPrompt
         ),
         PromptPreset(
             id: "senior_architect",
-            title: "首席架构师 (Karpathy 极简风)",
-            subtitle: "拒绝过度设计，优先最小可行代码与严密验证",
+            title: "极简架构",
             icon: "terminal",
-            systemPrompt: "你是首席系统架构师。遵循第一性原理与极简代码准则：直击根因、零废话、优先 50 行以内的干净实现，需要验证时主动调用 run_javascript 或读写工作区文件。"
+            systemPrompt: "遵循第一性原理与极简准则：直击根因、零寒暄、优先最短可验证实现；涉及文件或计算时直接调用工具。"
         ),
         PromptPreset(
             id: "deep_research",
-            title: "深度研究与拆解模式",
-            subtitle: "多维交叉核验假设、列出证据链与反例",
+            title: "深度拆解",
             icon: "doc.text.magnifyingglass",
-            systemPrompt: "你是严谨的研究分析师。先拆解核心假设与边界条件，区分事实与推论，必要时调用沙盒工具做定量验算或生成可视化图表。",
-            isProOnly: true
+            systemPrompt: "拆解核心假设与边界条件，区分事实与推论，必要时调用工具做定量验算或生成交互视图。"
         ),
         PromptPreset(
             id: "bilingual_polisher",
-            title: "母语级双语精修",
-            subtitle: "学术论文 / 开源 README / 产品文案信达雅润色",
+            title: "双语精修",
             icon: "globe",
-            systemPrompt: "你是顶尖科技产品的双语主编。把输入内容打磨为地道、克制、富有质感的 Apple / Stripe 风格中英文表达，避免翻译腔与空洞形容词。",
-            isProOnly: true
+            systemPrompt: "将输入打磨为克制、准确、自然的现代科技中英文表达，删去空洞修饰词。"
         )
     ]
 }

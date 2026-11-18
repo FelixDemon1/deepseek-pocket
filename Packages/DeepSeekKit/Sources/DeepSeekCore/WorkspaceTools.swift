@@ -70,6 +70,25 @@ public struct WorkspaceToolset: Sendable {
         return url
     }
 
+    /// Lightweight workspace index injected into Agent context (AX: avoids wasted `list_files` round-trips on turn 1).
+    public func workspaceSummary(maxEntries: Int = 24) -> String? {
+        guard let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+
+        let prefix = rootURL.standardizedFileURL.path + "/"
+        var paths: [String] = []
+        for case let fileURL as URL in enumerator {
+            guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            paths.append(fileURL.standardizedFileURL.path.replacingOccurrences(of: prefix, with: ""))
+            if paths.count >= maxEntries { break }
+        }
+        guard !paths.isEmpty else { return nil }
+        return paths.sorted().joined(separator: ", ")
+    }
+
     public static var toolSchemas: [[String: Any]] {
         [
             schema(

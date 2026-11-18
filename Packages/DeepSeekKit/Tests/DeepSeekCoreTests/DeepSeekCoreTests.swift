@@ -231,4 +231,23 @@ struct DeepSeekCoreTests {
         ) as? [String: Any]
         #expect(value?["sessionId"] as? String == "sess_42")
     }
+
+    @Test("AX workspaceSummary injects live file index and deepseekpocket://setup parses cleanly")
+    func axWorkspaceIndexAndPocketScheme() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("dspocket-ax-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let tools = WorkspaceToolset(rootURL: tempDir)
+        let firewall = PrivacyFirewall()
+        _ = await tools.execute(
+            ToolCallRequest(id: "w1", name: "write_file", argumentsJSON: #"{"path":"docs/spec.md","content":"ok"}"#),
+            firewall: firewall
+        )
+        #expect(tools.workspaceSummary() == "docs/spec.md")
+
+        let url = try #require(URL(string: "deepseekpocket://setup?base=https://gw.example.com/v1&model=deepseek-reasoner"))
+        let parsed = try #require(SetupLink.parse(url))
+        #expect(parsed.baseURL.absoluteString == "https://gw.example.com/v1")
+        #expect(parsed.model == "deepseek-reasoner")
+    }
 }

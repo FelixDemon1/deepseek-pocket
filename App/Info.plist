@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh-Hans</string>
 	<key>CFBundleDisplayName</key>
-	<string>Tide</string>
+	<string>DeepSeek Pocket</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -31,8 +31,9 @@
 			<string>io.deepseekgo.ios.deeplink</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>tide</string>
+				<string>deepseekpocket</string>
 				<string>deepseekgo</string>
+				<string>tide</string>
 				<string>dshgo</string>
 			</array>
 		</dict>

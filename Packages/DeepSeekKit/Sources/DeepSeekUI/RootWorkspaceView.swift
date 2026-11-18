@@ -1,19 +1,19 @@
 import SwiftUI
 import DeepSeekCore
 
-/// Pure Apple / Google / Linear Minimalist Workspace Shell.
+/// Linear / Apple Notes Minimalist Workspace Shell.
+/// Zero slogans, zero secondary labels, single-enum modal routing.
 public struct RootWorkspaceView: View {
+    public enum ActiveSheet: String, Identifiable {
+        case sessions, workspace, presets, settings, audit, share, scanner
+        public var id: String { rawValue }
+    }
+
     @Bindable public var vm: AppViewModel
     @Environment(\.colorScheme) private var systemScheme
 
     @State private var draftText: String = ""
-    @State private var showSessionsSheet: Bool = false
-    @State private var showAuditSheet: Bool = false
-    @State private var showWorkspaceSheet: Bool = false
-    @State private var showPresetsSheet: Bool = false
-    @State private var showSettingsSheet: Bool = false
-    @State private var showProSheet: Bool = false
-    @State private var showShareSheet: Bool = false
+    @State private var activeSheet: ActiveSheet?
 
     public init(vm: AppViewModel) {
         self.vm = vm
@@ -33,49 +33,30 @@ public struct RootWorkspaceView: View {
             canvas.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                minimalHeader(scheme: scheme, ink: ink, secondary: secondary)
+                header(ink: ink, secondary: secondary)
 
-                if let notice = vm.noticeBanner {
+                if let banner = vm.errorBanner ?? vm.noticeBanner {
                     HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(DeepSeekTheme.brandBlue)
-                        Text(notice)
-                            .font(.system(size: 13))
-                            .foregroundStyle(ink)
-                        Spacer()
-                        Button {
-                            vm.noticeBanner = nil
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(secondary)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(DeepSeekTheme.surface(scheme))
-                }
-
-                if let banner = vm.errorBanner {
-                    HStack(spacing: 8) {
-                        Image(systemName: "info.circle")
-                            .font(.system(size: 13))
+                        Circle()
+                            .fill(vm.errorBanner != nil ? DeepSeekTheme.diffRemoved : DeepSeekTheme.brandBlue)
+                            .frame(width: 6, height: 6)
                         Text(banner)
                             .font(.system(size: 13))
+                            .foregroundStyle(ink)
+                            .lineLimit(2)
                         Spacer()
                         Button {
                             vm.errorBanner = nil
+                            vm.noticeBanner = nil
                         } label: {
                             Image(systemName: "xmark")
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(secondary)
                         }
                         .buttonStyle(.plain)
                     }
-                    .foregroundStyle(ink)
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .padding(.vertical, 9)
                     .background(DeepSeekTheme.surface(scheme))
                 }
 
@@ -84,33 +65,40 @@ public struct RootWorkspaceView: View {
                 SteerComposerBar(
                     text: $draftText,
                     vm: vm,
-                    onOpenWorkspace: { showWorkspaceSheet = true },
-                    onOpenPresets: { showPresetsSheet = true }
+                    onOpenWorkspace: { activeSheet = .workspace },
+                    onOpenPresets: { activeSheet = .presets },
+                    onOpenScanner: { activeSheet = .scanner },
+                    onRequireSetup: { activeSheet = .settings }
                 )
             }
         }
         .preferredColorScheme(vm.appearance.colorScheme)
-        .sheet(isPresented: $showSessionsSheet) {
-            sessionsDrawerSheet
-        }
-        .sheet(isPresented: $showAuditSheet) {
-            NetworkAuditSheet(vm: vm)
-        }
-        .sheet(isPresented: $showWorkspaceSheet) {
-            WorkspaceBrowserSheet(vm: vm)
-        }
-        .sheet(isPresented: $showPresetsSheet) {
-            PersonaStudioSheet(vm: vm, onShowProPaywall: { showProSheet = true })
-        }
-        .sheet(isPresented: $showSettingsSheet) {
-            SettingsAndRemoteSheet(vm: vm)
-        }
-        .sheet(isPresented: $showProSheet) {
-            ProPaywallSheet(vm: vm)
-        }
-        .sheet(isPresented: $showShareSheet) {
-            if let session = vm.activeSession {
-                ShareCardSheet(session: session)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .sessions:
+                sessionsSheet
+            case .workspace:
+                WorkspaceBrowserSheet(vm: vm)
+            case .presets:
+                PersonaStudioSheet(vm: vm)
+            case .settings:
+                SettingsAndRemoteSheet(vm: vm, onOpenAudit: { activeSheet = .audit })
+            case .audit:
+                NetworkAuditSheet(vm: vm)
+            case .share:
+                if let session = vm.activeSession {
+                    ShareCardSheet(session: session)
+                }
+            case .scanner:
+                #if os(iOS)
+                QRScannerSheet { code in
+                    if let url = URL(string: code) {
+                        vm.handleSetupURL(url)
+                    }
+                }
+                #else
+                EmptyView()
+                #endif
             }
         }
         .sheet(item: $vm.activeArtifact) { artifact in
@@ -118,75 +106,63 @@ public struct RootWorkspaceView: View {
         }
     }
 
-    // MARK: - Whisper-Quiet ChatGPT / Gemini Centered Minimal Header
+    // MARK: - Header (Apple Notes / Linear Purity: Single-Line, Zero Subtitles)
 
-    private func minimalHeader(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
-        HStack {
+    private func header(ink: Color, secondary: Color) -> some View {
+        HStack(spacing: 12) {
             Button {
-                showSessionsSheet = true
+                activeSheet = .sessions
             } label: {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 18, weight: .regular))
+                Image(systemName: "sidebar.left")
+                    .font(.system(size: 17, weight: .regular))
                     .foregroundStyle(ink)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 34, height: 34)
             }
             .buttonStyle(.plain)
 
             Spacer()
 
             Menu {
-                Section("快速切换模型与渠道") {
-                    ForEach(ProviderConfig.presets, id: \.label) { preset in
-                        Button {
-                            if let url = URL(string: preset.base) {
-                                var next = vm.providerConfig
-                                next.baseURL = url
-                                next.model = preset.model
-                                vm.updateProviderConfig(next)
-                                vm.engineMode = .onDeviceHarness
-                            }
-                        } label: {
+                ForEach(ProviderConfig.presets, id: \.label) { preset in
+                    Button {
+                        if let url = URL(string: preset.base) {
+                            var next = vm.providerConfig
+                            next.baseURL = url
+                            next.model = preset.model
+                            vm.updateProviderConfig(next)
+                            vm.engineMode = .onDeviceHarness
+                        }
+                    } label: {
+                        if vm.providerConfig.model == preset.model && vm.providerConfig.baseURL.absoluteString == preset.base {
+                            Label(preset.label, systemImage: "checkmark")
+                        } else {
                             Text(preset.label)
                         }
                     }
                 }
-                Section("引擎与安全") {
-                    Button {
-                        showPresetsSheet = true
-                    } label: {
-                        Label("指令预设：\(vm.activePreset.title)", systemImage: "slider.horizontal.3")
-                    }
-                    Button {
-                        showAuditSheet = true
-                    } label: {
-                        Label("零遥测网络审计 (\(vm.auditEntries.count))", systemImage: "checkmark.shield")
-                    }
-                    Button {
-                        showSettingsSheet = true
-                    } label: {
-                        Label("模型网关与远程 DSH 设置", systemImage: "gearshape")
-                    }
+                Divider()
+                Button {
+                    activeSheet = .settings
+                } label: {
+                    Label("设置", systemImage: "slider.horizontal.3")
                 }
             } label: {
-                VStack(spacing: 1) {
-                    HStack(spacing: 4) {
-                        Text(vm.shortModelTitle)
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(ink)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(secondary)
-                    }
-                    Text("\(vm.engineMode == .onDeviceHarness ? "本机沙盒" : "远程主机") · 0 遥测")
-                        .font(.system(size: 11))
+                HStack(spacing: 4) {
+                    Text(vm.shortModelTitle)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(ink)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(secondary)
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
             }
 
             Spacer()
 
             if vm.showCompanionPet && !(vm.activeSession?.messages.filter { $0.role != .system }.isEmpty ?? true) {
-                PixelCompanionView(mood: vm.companionMood, scale: 1.55)
+                PixelCompanionView(mood: vm.companionMood, scale: 1.35)
             }
 
             Button {
@@ -195,7 +171,7 @@ public struct RootWorkspaceView: View {
                 Image(systemName: "square.and.pencil")
                     .font(.system(size: 17, weight: .regular))
                     .foregroundStyle(ink)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 34, height: 34)
             }
             .buttonStyle(.plain)
         }
@@ -203,13 +179,36 @@ public struct RootWorkspaceView: View {
         .padding(.vertical, 6)
     }
 
-    // MARK: - Editorial Empty State & Clean Stream
+    // MARK: - Body (Pure Canvas, Zero Slogans)
 
     @ViewBuilder
     private func chatBody(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
         let visibleMessages = (vm.activeSession?.messages ?? []).filter { $0.role != .system }
         if visibleMessages.isEmpty {
-            emptyEditorialView(scheme: scheme, ink: ink, secondary: secondary)
+            VStack(spacing: 24) {
+                Spacer()
+
+                if vm.showCompanionPet {
+                    PixelCompanionView(mood: vm.companionMood, scale: 3.6)
+                }
+
+                HStack(spacing: 8) {
+                    quietActionPill(scheme: scheme, title: "演示", icon: "play") {
+                        vm.runInteractiveShowcase()
+                    }
+                    quietActionPill(scheme: scheme, title: "工作区", icon: "folder") {
+                        activeSheet = .workspace
+                    }
+                    #if os(iOS)
+                    quietActionPill(scheme: scheme, title: "扫码", icon: "qrcode") {
+                        activeSheet = .scanner
+                    }
+                    #endif
+                }
+
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
         } else {
             let lastAssistantId = visibleMessages.last(where: { $0.role == .assistant })?.id
             ScrollViewReader { proxy in
@@ -225,14 +224,14 @@ public struct RootWorkspaceView: View {
                                 onOpenArtifact: { art in vm.activeArtifact = art },
                                 onFork: { vm.forkSession(upTo: msg.id) },
                                 onRegenerate: { vm.regenerateLastTurn() },
-                                onShare: { showShareSheet = true }
+                                onShare: { activeSheet = .share }
                             )
                             .id(msg.id)
                         }
                         Color.clear.frame(height: 12).id("__bottom__")
                     }
                     .padding(.horizontal, 18)
-                    .padding(.top, 14)
+                    .padding(.top, 12)
                 }
                 .onChange(of: visibleMessages.count) { _, _ in
                     withAnimation(.easeOut(duration: 0.2)) {
@@ -246,188 +245,91 @@ public struct RootWorkspaceView: View {
         }
     }
 
-    private func emptyEditorialView(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
-        ScrollView {
-            VStack(spacing: 28) {
-                Spacer(minLength: 48)
-
-                VStack(spacing: 14) {
-                    if vm.showCompanionPet {
-                        PixelCompanionView(mood: vm.companionMood, scale: 3.6)
-                    } else {
-                        MinimalBrandMark(size: 46)
-                    }
-
-                    Text("有什么可以帮你？")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(ink)
-                        .tracking(-0.3)
-                }
-
-                // 2x2 Minimal Hairline Suggestion Grid (Google Gemini / ChatGPT Minimalist Style)
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-                    minimalChip(
-                        scheme: scheme,
-                        title: "沙盒工作流演示",
-                        subtitle: "免填 Key 预览思考与审批",
-                        action: { vm.runInteractiveShowcase() }
-                    )
-                    minimalChip(
-                        scheme: scheme,
-                        title: "整理工作区代码",
-                        subtitle: "读取文件并输出 Diff",
-                        action: { vm.sendOrSteer(text: "列出本机工作区文件，读取 WELCOME.md 并起草一份精简的开发计划 PLAN.md。") }
-                    )
-                    minimalChip(
-                        scheme: scheme,
-                        title: "构建可交互小工具",
-                        subtitle: "在离线沙盒渲染 HTML",
-                        action: { vm.sendOrSteer(text: "调用 render_artifact 生成一个极简黑白风格的番茄钟与任务计时器。") }
-                    )
-                    minimalChip(
-                        scheme: scheme,
-                        title: "切换指令与规则",
-                        subtitle: vm.activePreset.title,
-                        action: { showPresetsSheet = true }
-                    )
-                }
-                .padding(.horizontal, 16)
-
-                if !vm.hasAPIKeyConfigured {
-                    Button {
-                        showSettingsSheet = true
-                    } label: {
-                        HStack(spacing: 5) {
-                            Text("连接 API Key、免费 R1 通道或自建网关")
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                        .font(.system(size: 13))
-                        .foregroundStyle(secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Spacer(minLength: 24)
-            }
-        }
-    }
-
-    private func minimalChip(scheme: ColorScheme, title: String, subtitle: String, action: @escaping () -> Void) -> some View {
+    private func quietActionPill(scheme: ColorScheme, title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .medium))
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(DeepSeekTheme.secondaryInk(scheme))
-                    .lineLimit(1)
+                    .font(.system(size: 13, weight: .medium))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
+            .foregroundStyle(DeepSeekTheme.secondaryInk(scheme))
+            .padding(.horizontal, 13)
+            .padding(.vertical, 8)
             .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                Capsule()
                     .fill(DeepSeekTheme.surface(scheme))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(DeepSeekTheme.hairline(scheme), lineWidth: 0.75)
-                    )
+                    .overlay(Capsule().stroke(DeepSeekTheme.hairline(scheme), lineWidth: 0.75))
             )
         }
         .buttonStyle(.plain)
     }
 
-    // MARK: - Minimalist Navigation Drawer (Search + Sessions + Presets + Audit + Pro + Settings)
+    // MARK: - Apple-Notes-Style Clean Sidebar
 
-    private var sessionsDrawerSheet: some View {
+    private var sessionsSheet: some View {
         NavigationStack {
             List {
                 Section {
                     Button {
-                        showSessionsSheet = false
-                        showPresetsSheet = true
+                        activeSheet = .workspace
                     } label: {
-                        Label("指令与规则预设（\(vm.activePreset.title)）", systemImage: "slider.horizontal.3")
+                        Label("工作区", systemImage: "folder")
                     }
-
                     Button {
-                        showSessionsSheet = false
-                        showWorkspaceSheet = true
-                    } label: {
-                        Label("本机工作区文件", systemImage: "folder")
-                    }
-
-                    Button {
-                        showSessionsSheet = false
-                        showAuditSheet = true
-                    } label: {
-                        Label("零遥测网络审计", systemImage: "checkmark.shield")
-                    }
-
-                    Button {
-                        showSessionsSheet = false
-                        showProSheet = true
+                        activeSheet = .presets
                     } label: {
                         HStack {
-                            Label("Tide Pro", systemImage: "sparkles.square.filled.on.square")
+                            Label("规则", systemImage: "slider.horizontal.3")
                             Spacer()
-                            Text(vm.isProUnlocked ? "已激活" : "升级")
-                                .font(.caption)
+                            Text(vm.activePreset.title)
+                                .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
                     }
-
                     Button {
-                        showSessionsSheet = false
-                        showSettingsSheet = true
+                        activeSheet = .settings
                     } label: {
-                        Label("设置与网关渠道", systemImage: "gearshape")
+                        Label("设置", systemImage: "gearshape")
                     }
                 }
 
-                Section("历史对话") {
+                Section {
                     ForEach(vm.filteredSessions) { session in
                         Button {
                             vm.activeSessionId = session.id
-                            showSessionsSheet = false
+                            activeSheet = nil
                         } label: {
                             HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(session.title)
-                                        .font(.subheadline.weight(session.id == vm.activeSessionId ? .semibold : .regular))
-                                        .foregroundStyle(.primary)
-                                    Text("\(session.messages.filter { $0.role != .system }.count) 条消息")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
+                                Text(session.title)
+                                    .font(.subheadline.weight(session.id == vm.activeSessionId ? .semibold : .regular))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
                                 Spacer()
                                 if session.id == vm.activeSessionId {
                                     Circle()
-                                        .fill(Color.primary)
+                                        .fill(DeepSeekTheme.brandBlue)
                                         .frame(width: 6, height: 6)
                                 }
                             }
                         }
                     }
                     .onDelete { offsets in
-                        let currentList = vm.filteredSessions
+                        let list = vm.filteredSessions
                         for idx in offsets {
-                            vm.deleteSession(currentList[idx].id)
+                            vm.deleteSession(list[idx].id)
                         }
                     }
                 }
             }
-            .searchable(text: $vm.sessionSearchQuery, prompt: "搜索历史对话与消息")
-            .navigationTitle("Tide")
+            .searchable(text: $vm.sessionSearchQuery, prompt: "搜索")
+            .navigationTitle("DeepSeek Pocket")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { showSessionsSheet = false }
+                    Button("完成") { activeSheet = nil }
                 }
             }
         }

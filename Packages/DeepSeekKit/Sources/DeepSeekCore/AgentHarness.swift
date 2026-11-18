@@ -15,11 +15,10 @@ public enum AgentEvent: Sendable {
 /// Coordinates multi-step Agent execution, Mid-Turn Steer Queue ("插话纠偏"), and Interactive Safety Approvals.
 public actor AgentHarness {
     public static let defaultSystemPrompt = """
-    你是 DeepSeek Go（iOS 原生满血双核 Agent）。你运行在用户 iPhone 本机的零遥测安全沙盒内。
-    - 需要读写项目代码或文档时，优先使用 list_files / read_file / edit_file / write_file。
-    - 需要精准计算或处理数据时，调用 run_javascript。
-    - 需要展示可视化图表、架构图或交互小工具时，调用 render_artifact（支持 html / svg / mermaid）。
-    - 回答保持精炼、直接、高信息密度。
+    你是 DeepSeek Pocket。回答保持直接、精炼、无套话。
+    - 读写工作区文件用 read_file / edit_file / write_file；
+    - 精确计算用 run_javascript；
+    - 交互视图或图表用 render_artifact (html / svg / mermaid)。
     """
 
     private let transport: ModelStreamingTransport
@@ -65,6 +64,13 @@ public actor AgentHarness {
         var workingHistory = history
         if !workingHistory.contains(where: { $0.role == .system }) {
             workingHistory.insert(ChatMessage(role: .system, content: Self.defaultSystemPrompt), at: 0)
+        }
+        // AX: Attach live workspace file snapshot so the Agent can directly `read_file` without blind `list_files` round-trips.
+        if config.enableTools,
+           let summary = toolset.workspaceSummary(),
+           let sysIdx = workingHistory.firstIndex(where: { $0.role == .system }),
+           !workingHistory[sysIdx].content.contains("<workspace_files>") {
+            workingHistory[sysIdx].content += "\n<workspace_files>\(summary)</workspace_files>"
         }
 
         var newlyAppended: [ChatMessage] = []

@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 import WebKit
 import DeepSeekCore
 
-// MARK: - Minimalist Network Audit & Zero-Telemetry Sheet
+// MARK: - Network Audit Sheet (Structured Data, Zero Slogans)
 
 public struct NetworkAuditSheet: View {
     @Bindable public var vm: AppViewModel
@@ -16,49 +16,35 @@ public struct NetworkAuditSheet: View {
     public var body: some View {
         NavigationStack {
             List {
-                Section {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Label("零遥测防火墙运行中", systemImage: "checkmark.shield")
-                            .font(.subheadline.weight(.semibold))
-                        Text("0 字节发往任何开发者服务器或统计平台。所有出站请求按域名白名单拦截，URL 内的令牌自动脱敏。")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-
-                        Button {
-                            Task { await vm.runFirewallSelfTest() }
-                        } label: {
-                            Text("模拟拦截第三方统计与中继请求")
-                                .font(.footnote.weight(.medium))
-                        }
+                Section("白名单") {
+                    LabeledContent("模型", value: vm.allowlistInfo.modelHosts.joined(separator: ", "))
+                        .font(.footnote.monospaced())
+                    if !vm.allowlistInfo.remoteHosts.isEmpty {
+                        LabeledContent("DSH", value: vm.allowlistInfo.remoteHosts.joined(separator: ", "))
+                            .font(.footnote.monospaced())
                     }
-                    .padding(.vertical, 4)
-                } header: {
-                    Text("安全边界")
+                    Button("拦截自检") {
+                        Task { await vm.runFirewallSelfTest() }
+                    }
+                    .font(.footnote)
                 }
 
-                Section("白名单主机") {
-                    LabeledContent("模型接口", value: vm.allowlistInfo.modelHosts.joined(separator: ", "))
-                        .font(.footnote)
-                    LabeledContent("远程 DSH", value: vm.allowlistInfo.remoteHosts.isEmpty ? "未配对" : vm.allowlistInfo.remoteHosts.joined(separator: ", "))
-                        .font(.footnote)
-                }
-
-                Section("出站与阻断记录 (\(vm.auditEntries.count))") {
+                Section("记录 (\(vm.auditEntries.count))") {
                     if vm.auditEntries.isEmpty {
-                        Text("启动至今 0 次网络请求")
+                        Text("无网络请求")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(vm.auditEntries) { entry in
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: 3) {
                                 HStack {
-                                    Text(entry.wasBlocked ? "已拦截" : "\(entry.statusCode ?? 200)")
+                                    Text(entry.wasBlocked ? "BLOCK" : "\(entry.statusCode ?? 200)")
                                         .font(.caption2.monospaced().weight(.semibold))
                                         .foregroundStyle(entry.wasBlocked ? DeepSeekTheme.diffRemoved : DeepSeekTheme.diffAdded)
                                     Text("\(entry.method) \(entry.host)")
                                         .font(.caption.monospaced())
                                     Spacer()
-                                    Text("\(entry.durationMs) ms")
+                                    Text("\(entry.durationMs)ms")
                                         .font(.caption2.monospaced())
                                         .foregroundStyle(.secondary)
                                 }
@@ -71,14 +57,16 @@ public struct NetworkAuditSheet: View {
                     }
                 }
             }
-            .navigationTitle("网络与隐私审计")
+            .navigationTitle("网络审计")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("清空") {
-                        Task { await vm.clearAuditLogs() }
+                    if !vm.auditEntries.isEmpty {
+                        Button("清空") {
+                            Task { await vm.clearAuditLogs() }
+                        }
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -92,7 +80,7 @@ public struct NetworkAuditSheet: View {
     }
 }
 
-// MARK: - Minimalist iOS Files.app Workspace Browser
+// MARK: - Workspace Browser (Apple Notes Clean File List + Folder Mount)
 
 public struct WorkspaceBrowserSheet: View {
     @Bindable public var vm: AppViewModel
@@ -114,54 +102,40 @@ public struct WorkspaceBrowserSheet: View {
         NavigationStack {
             List {
                 Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(
-                            toolset.isExternalSecurityScoped
-                                ? "当前挂载外部授权目录：\(toolset.rootURL.lastPathComponent)"
-                                : "当前使用内置沙盒目录（系统「文件 App › 我的 iPhone › Tide › Workspace」）。"
-                        )
+                    HStack {
+                        Label(toolset.rootURL.lastPathComponent, systemImage: "folder")
+                            .font(.subheadline.weight(.medium))
+                        Spacer()
+                        Button("切换目录") {
+                            showingFolderImporter = true
+                        }
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
 
-                        HStack(spacing: 12) {
-                            Button {
-                                showingFolderImporter = true
-                            } label: {
-                                Label("授权挂载任意外部文件夹", systemImage: "folder.badge.plus")
-                                    .font(.footnote.weight(.medium))
+                        if toolset.isExternalSecurityScoped {
+                            Button("重置") {
+                                vm.resetToBuiltInWorkspace()
+                                reloadFiles()
                             }
-
-                            if toolset.isExternalSecurityScoped {
-                                Button("切回内置目录") {
-                                    vm.resetToBuiltInWorkspace()
-                                    reloadFiles()
-                                }
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(.vertical, 2)
-                } header: {
-                    Text("苹果官方文件沙盒与外部目录授权")
                 }
 
-                Section("文件 (\(files.count))") {
+                Section {
                     ForEach(files, id: \.path) { url in
                         Button {
                             selectedFile = url
-                            selectedContent = (try? String(contentsOf: url, encoding: .utf8)) ?? "(空文件或二进制文件)"
+                            selectedContent = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
                         } label: {
                             HStack {
-                                Image(systemName: "doc.text")
-                                    .foregroundStyle(.primary)
                                 Text(relativePath(for: url))
                                     .font(.subheadline.monospaced())
                                     .foregroundStyle(.primary)
                                 Spacer()
                                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
                                 Text("\(size) B")
-                                    .font(.caption)
+                                    .font(.caption.monospaced())
                                     .foregroundStyle(.secondary)
                             }
                         }
@@ -185,7 +159,7 @@ public struct WorkspaceBrowserSheet: View {
                     }
                 }
             }
-            .navigationTitle("本机工作区")
+            .navigationTitle("工作区")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -202,11 +176,11 @@ public struct WorkspaceBrowserSheet: View {
                 }
             }
             .alert("新建文件", isPresented: $showingNewFileAlert) {
-                TextField("例如 notes/plan.md", text: $newFileName)
+                TextField("notes.md", text: $newFileName)
                 Button("创建") {
                     if let safe = try? toolset.resolveSafeURL(newFileName) {
                         try? FileManager.default.createDirectory(at: safe.deletingLastPathComponent(), withIntermediateDirectories: true)
-                        try? Data("# \(newFileName)\n".utf8).write(to: safe, options: .atomic)
+                        try? Data().write(to: safe, options: .atomic)
                         newFileName = ""
                         reloadFiles()
                     }
@@ -247,21 +221,18 @@ public struct WorkspaceBrowserSheet: View {
     }
 }
 
-// MARK: - Persona & Ruleset Studio (with 1-Click Snapshot Rollback)
+// MARK: - Clean Rules Sheet (No Subtitle Clutter, 1-Tap Rollback)
 
 public struct PersonaStudioSheet: View {
     @Bindable public var vm: AppViewModel
-    public var onShowProPaywall: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var showingCustomCreator = false
     @State private var customTitle = ""
-    @State private var customSubtitle = ""
     @State private var customPrompt = ""
 
-    public init(vm: AppViewModel, onShowProPaywall: @escaping () -> Void) {
+    public init(vm: AppViewModel) {
         self.vm = vm
-        self.onShowProPaywall = onShowProPaywall
     }
 
     public var body: some View {
@@ -269,57 +240,31 @@ public struct PersonaStudioSheet: View {
             List {
                 if vm.canRollbackPreset {
                     Section {
-                        Button {
+                        Button("撤销上次切换") {
                             vm.rollbackPreset()
-                        } label: {
-                            Label("一键回滚至切换前的指令快照", systemImage: "arrow.uturn.backward")
-                                .font(.footnote.weight(.medium))
                         }
                     }
                 }
 
-                Section("工作流与角色指令集") {
+                Section {
                     ForEach(vm.presets) { preset in
                         Button {
-                            if vm.selectPreset(preset) {
-                                dismiss()
-                            } else {
-                                dismiss()
-                                onShowProPaywall()
-                            }
+                            vm.selectPreset(preset)
+                            dismiss()
                         } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: preset.icon)
-                                    .font(.system(size: 16, weight: .medium))
-                                    .frame(width: 28)
+                                    .frame(width: 22)
                                     .foregroundStyle(.primary)
-
-                                VStack(alignment: .leading, spacing: 3) {
-                                    HStack(spacing: 6) {
-                                        Text(preset.title)
-                                            .font(.subheadline.weight(.medium))
-                                            .foregroundStyle(.primary)
-                                        if preset.isProOnly && !vm.isProUnlocked {
-                                            Text("PRO")
-                                                .font(.system(size: 10, weight: .bold))
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(Capsule().fill(Color.primary.opacity(0.1)))
-                                                .foregroundStyle(.primary)
-                                        }
-                                    }
-                                    Text(preset.subtitle)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
+                                Text(preset.title)
+                                    .foregroundStyle(.primary)
                                 Spacer()
                                 if preset.id == vm.activePresetId {
                                     Image(systemName: "checkmark")
                                         .font(.system(size: 13, weight: .semibold))
-                                        .foregroundStyle(.primary)
+                                        .foregroundStyle(DeepSeekTheme.brandBlue)
                                 }
                             }
-                            .padding(.vertical, 2)
                         }
                     }
                 }
@@ -328,12 +273,11 @@ public struct PersonaStudioSheet: View {
                     Button {
                         showingCustomCreator = true
                     } label: {
-                        Label("新建自定义系统规则 (.rules)", systemImage: "plus")
-                            .font(.subheadline)
+                        Label("新建规则", systemImage: "plus")
                     }
                 }
             }
-            .navigationTitle("指令与规则预设")
+            .navigationTitle("规则")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -345,14 +289,13 @@ public struct PersonaStudioSheet: View {
             .sheet(isPresented: $showingCustomCreator) {
                 NavigationStack {
                     Form {
-                        TextField("预设名称（如 Swift 并发专家）", text: $customTitle)
-                        TextField("简短说明", text: $customSubtitle)
-                        Section("System Prompt 规则正文") {
+                        TextField("名称", text: $customTitle)
+                        Section {
                             TextEditor(text: $customPrompt)
-                                .frame(minHeight: 140)
+                                .frame(minHeight: 160)
                         }
                     }
-                    .navigationTitle("新建规则预设")
+                    .navigationTitle("新建规则")
                     #if os(iOS)
                     .navigationBarTitleDisplayMode(.inline)
                     #endif
@@ -362,9 +305,8 @@ public struct PersonaStudioSheet: View {
                         }
                         ToolbarItem(placement: .confirmationAction) {
                             Button("保存") {
-                                vm.addCustomPreset(title: customTitle, subtitle: customSubtitle, systemPrompt: customPrompt)
+                                vm.addCustomPreset(title: customTitle, systemPrompt: customPrompt)
                                 customTitle = ""
-                                customSubtitle = ""
                                 customPrompt = ""
                                 showingCustomCreator = false
                             }
@@ -397,7 +339,7 @@ public struct ArtifactSandboxSheet: View {
                 #endif
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("关闭") { dismiss() }
+                        Button("完成") { dismiss() }
                     }
                 }
         }
