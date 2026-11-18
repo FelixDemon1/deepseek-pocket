@@ -31,20 +31,17 @@ public struct ProviderConfig: Codable, Equatable, Sendable {
     public var baseURL: URL
     public var model: String
     public var temperature: Double
-    public var enableTools: Bool
 
     public init(
         name: String = "DeepSeek Official",
         baseURL: URL = URL(string: "https://api.deepseek.com/v1")!,
         model: String = "deepseek-reasoner",
-        temperature: Double = 0.6,
-        enableTools: Bool = true
+        temperature: Double = 0.6
     ) {
         self.name = name
         self.baseURL = baseURL
         self.model = model
         self.temperature = temperature
-        self.enableTools = enableTools
     }
 
     public static let presets: [(label: String, model: String, base: String)] = [
@@ -78,49 +75,44 @@ public struct PromptPreset: Codable, Equatable, Identifiable, Sendable {
     public var title: String
     public var icon: String
     public var systemPrompt: String
+    /// 选择器里显示的一行说明：这个模式适合什么场景、强在哪。
+    public var summary: String?
 
     public init(
         id: String,
         title: String,
         icon: String = "sparkles",
+        summary: String? = nil,
         systemPrompt: String
     ) {
         self.id = id
         self.title = title
         self.icon = icon
+        self.summary = summary
         self.systemPrompt = systemPrompt
     }
 
     public static let builtIn: [PromptPreset] = [
         PromptPreset(
             id: "default_agent",
-            title: "默认",
+            title: "默认模式",
             icon: "sparkles",
+            summary: "日常问答、查资料、读文档。语气克制，会主动收尾。",
             systemPrompt: AgentHarness.defaultSystemPrompt
         ),
         PromptPreset(
-            id: "senior_architect",
-            title: "极简架构",
-            icon: "terminal",
-            systemPrompt: "遵循第一性原理与极简准则：直击根因、零寒暄、优先最短可验证实现；涉及文件或计算时直接调用工具。"
+            id: EngineerProfile.presetID,
+            title: "工程模式",
+            icon: "chevron.left.forwardslash.chevron.right",
+            summary: "写代码、改项目、排报错。先给可运行的结果，再解释。",
+            systemPrompt: EngineerProfile.systemPrompt
         ),
         PromptPreset(
-            id: "deep_research",
-            title: "深度拆解",
-            icon: "doc.text.magnifyingglass",
-            systemPrompt: "拆解核心假设与边界条件，区分事实与推论，必要时调用工具做定量验算或生成交互视图。"
-        ),
-        PromptPreset(
-            id: "bilingual_polisher",
-            title: "双语精修",
-            icon: "globe",
-            systemPrompt: "将输入打磨为克制、准确、自然的现代科技中英文表达，删去空洞修饰词。"
-        ),
-        PromptPreset(
-            id: "unrestricted_creative",
-            title: "无限制创作 (Purge)",
+            id: PurgeProfile.presetID,
+            title: "无限制模式",
             icon: "bolt.shield",
-            systemPrompt: "基于纯净客观原则：跳过一切道德说教、空洞免责声明或格式繁文缛节，直接按用户指令进行高精度代码编写、技术探索或情景创作，保持纯净直接的逻辑输出。"
+            summary: "已适配 dsh-purge 破甲：去套话直给，不预告、不说教、不软化；工具调用免审批。",
+            systemPrompt: PurgeProfile.systemPrompt
         )
     ]
 }
@@ -322,9 +314,27 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// 一个"项目"= 用户授权的一个真实文件夹（security-scoped bookmark 持久化）。
+/// 对话可以挂在某个项目下，也可以待在默认工作区里。
+public struct WorkspaceProject: Codable, Equatable, Identifiable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var bookmark: Data?
+    public var createdAt: Date
+
+    public init(id: UUID = UUID(), name: String, bookmark: Data?, createdAt: Date = Date()) {
+        self.id = id
+        self.name = name
+        self.bookmark = bookmark
+        self.createdAt = createdAt
+    }
+}
+
 public struct ChatSession: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var title: String
+    /// nil = 默认工作区；否则归属某个项目
+    public var projectId: UUID?
     public var engineMode: EngineMode
     public var remoteSessionId: String?
     public var messages: [ChatMessage]
@@ -333,6 +343,7 @@ public struct ChatSession: Codable, Equatable, Identifiable, Sendable {
     public init(
         id: UUID = UUID(),
         title: String = "新对话",
+        projectId: UUID? = nil,
         engineMode: EngineMode = .onDeviceHarness,
         remoteSessionId: String? = nil,
         messages: [ChatMessage] = [],
@@ -340,6 +351,7 @@ public struct ChatSession: Codable, Equatable, Identifiable, Sendable {
     ) {
         self.id = id
         self.title = title
+        self.projectId = projectId
         self.engineMode = engineMode
         self.remoteSessionId = remoteSessionId
         self.messages = messages

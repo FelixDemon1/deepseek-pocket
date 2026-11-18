@@ -1,11 +1,20 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 import DeepSeekCore
 
 /// Google Gemini Mobile-inspired Minimalist Workspace Shell.
 public struct RootWorkspaceView: View {
     public enum ActiveSheet: String, Identifiable {
-        case sessions, modelPicker, workspace, presets, settings, audit, share
+        case modelPicker, workspace, presets, audit, share
         public var id: String { rawValue }
+    }
+
+    /// Gemini mobile never pushes these from the bottom — history slides in from the
+    /// leading edge and account/settings slides in from the trailing edge.
+    public enum SidePanel: String, Equatable {
+        case sessions, settings
     }
 
     @Bindable public var vm: AppViewModel
@@ -13,6 +22,14 @@ public struct RootWorkspaceView: View {
 
     @State private var draftText: String = ""
     @State private var activeSheet: ActiveSheet?
+    @State private var activeSide: SidePanel?
+    /// 0 = fully closed, 1 = fully open. Driven directly by the finger while dragging.
+    @State private var panelProgress: CGFloat = 0
+    @State private var containerWidth: CGFloat = 393
+    @State private var dragStartProgress: CGFloat = 0
+    @State private var dragAnchorX: CGFloat = 0
+    @State private var isDraggingDrawer = false
+    @State private var isDraggingScrim = false
 
     public init(vm: AppViewModel) {
         self.vm = vm
@@ -66,15 +83,24 @@ public struct RootWorkspaceView: View {
                     vm: vm,
                     onOpenWorkspace: { activeSheet = .workspace },
                     onOpenPresets: { activeSheet = .presets },
-                    onRequireSetup: { activeSheet = .settings }
+                    onRequireSetup: { openSidePanel(.settings) }
                 )
             }
         }
+        .overlay {
+            sidePanelLayer(scheme: scheme, ink: ink, secondary: secondary)
+        }
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { containerWidth = geo.size.width }
+                    .onChange(of: geo.size.width) { _, newWidth in containerWidth = newWidth }
+            }
+        }
+        .simultaneousGesture(drawerGesture)
         .preferredColorScheme(vm.appearance.colorScheme)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
-            case .sessions:
-                geminiDrawerSheet(scheme: scheme, ink: ink, secondary: secondary)
             case .modelPicker:
                 geminiModelHalfSheet(scheme: scheme, ink: ink, secondary: secondary)
                     .presentationDetents([.height(370)])
@@ -83,14 +109,19 @@ public struct RootWorkspaceView: View {
                 WorkspaceBrowserSheet(vm: vm)
             case .presets:
                 PersonaStudioSheet(vm: vm)
-            case .settings:
-                SettingsAndRemoteSheet(vm: vm, onOpenAudit: { activeSheet = .audit })
             case .audit:
                 NetworkAuditSheet(vm: vm)
             case .share:
                 if let session = vm.activeSession {
                     ShareCardSheet(session: session)
                 }
+            }
+        }
+        .onChange(of: activeSheet) { _ in endEditing() }
+        .sheet(isPresented: $vm.purgeIntroPresented) {
+            PurgeIntroSheet { sample in
+                draftText = sample
+                vm.purgeIntroPresented = false
             }
         }
         .sheet(item: $vm.activeArtifact) { artifact in
@@ -100,9 +131,9 @@ public struct RootWorkspaceView: View {
             if let name = vm.requestedSheetName {
                 switch name {
                 case "models": activeSheet = .modelPicker
-                case "settings": activeSheet = .settings
+                case "settings": openSidePanel(.settings)
                 case "presets": activeSheet = .presets
-                case "drawer": activeSheet = .sessions
+                case "drawer": openSidePanel(.sessions)
                 default: break
                 }
                 vm.requestedSheetName = nil
@@ -112,9 +143,9 @@ public struct RootWorkspaceView: View {
             guard let name else { return }
             switch name {
             case "models": activeSheet = .modelPicker
-            case "settings": activeSheet = .settings
+            case "settings": openSidePanel(.settings)
             case "presets": activeSheet = .presets
-            case "drawer": activeSheet = .sessions
+            case "drawer": openSidePanel(.sessions)
             default: break
             }
             vm.requestedSheetName = nil
@@ -127,7 +158,7 @@ public struct RootWorkspaceView: View {
         HStack(spacing: 10) {
             // Left: Gemini staggered menu icon -> opens History & Navigation Drawer
             Button {
-                activeSheet = .sessions
+                openSidePanel(.sessions)
             } label: {
                 VStack(alignment: .leading, spacing: 4.5) {
                     Capsule()
@@ -185,17 +216,10 @@ public struct RootWorkspaceView: View {
                 }
 
                 Button {
-                    activeSheet = .settings
+                    openSidePanel(.settings)
                 } label: {
                     ZStack(alignment: .bottomTrailing) {
-                        Circle()
-                            .fill(DeepSeekTheme.brandSoftFill(scheme))
-                            .frame(width: 34, height: 34)
-                            .overlay(
-                                Image(systemName: "person.fill")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(DeepSeekTheme.brandBlue)
-                            )
+                        avatarCircle(size: 34, scheme: scheme)
 
                         Circle()
                             .fill(vm.hasAPIKeyConfigured ? DeepSeekTheme.diffAdded : Color.orange)
@@ -225,10 +249,10 @@ public struct RootWorkspaceView: View {
                     quietActionPill(scheme: scheme, title: "体验演示", icon: "play") {
                         vm.runInteractiveShowcase()
                     }
-                    quietActionPill(scheme: scheme, title: "本地文件", icon: "folder") {
+                    quietActionPill(scheme: scheme, title: "项目", icon: "folder") {
                         activeSheet = .workspace
                     }
-                    quietActionPill(scheme: scheme, title: "回答风格", icon: "sparkles") {
+                    quietActionPill(scheme: scheme, title: "模式", icon: "sparkles") {
                         activeSheet = .presets
                     }
                 }
@@ -236,6 +260,8 @@ public struct RootWorkspaceView: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture { endEditing() }
         } else {
             let lastAssistantId = visibleMessages.last(where: { $0.role == .assistant })?.id
             ScrollViewReader { proxy in
@@ -260,6 +286,8 @@ public struct RootWorkspaceView: View {
                     .padding(.horizontal, 18)
                     .padding(.top, 12)
                 }
+                .scrollDismissesKeyboard(.interactively)
+                .simultaneousGesture(TapGesture().onEnded { endEditing() })
                 .onChange(of: visibleMessages.count) { _, _ in
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
@@ -302,7 +330,7 @@ public struct RootWorkspaceView: View {
                     .foregroundStyle(ink)
                 Spacer()
                 Button("接口设置") {
-                    activeSheet = .settings
+                    openSidePanel(.settings)
                 }
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(DeepSeekTheme.brandBlue)
@@ -387,16 +415,30 @@ public struct RootWorkspaceView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Google Gemini Mobile Navigation Drawer Sheet
+    // MARK: - Google Gemini Mobile Navigation Drawer (slides in from the leading edge)
 
-    private func geminiDrawerSheet(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
+    private func sessionsPanel(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
         NavigationStack {
             VStack(spacing: 0) {
-                // Gemini-style Top New Chat Pill + Quick Features
+                // 用户资料 + 新建对话 + 快捷入口
                 VStack(spacing: 10) {
+                    HStack(spacing: 10) {
+                        avatarCircle(size: 38, scheme: scheme)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(vm.displayName.isEmpty ? "未设置昵称" : vm.displayName)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(ink)
+                            Text("\(vm.activePreset.title) · \(vm.projectName(for: vm.activeSession?.projectId))")
+                                .font(.caption2)
+                                .foregroundStyle(secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                    }
+
                     Button {
                         vm.createNewSession()
-                        activeSheet = nil
+                        closeSidePanel()
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "plus")
@@ -414,56 +456,309 @@ public struct RootWorkspaceView: View {
                     }
                     .buttonStyle(.plain)
 
-                    HStack(spacing: 8) {
-                        drawerFeatureChip(scheme: scheme, title: "我的本地文件", icon: "folder") {
-                            activeSheet = .workspace
-                        }
-                        drawerFeatureChip(scheme: scheme, title: "回答风格：\(vm.activePreset.title)", icon: "sparkles") {
-                            activeSheet = .presets
-                        }
-                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
 
                 List {
-                    Section("近期对话") {
-                        ForEach(vm.filteredSessions) { session in
+                    Section {
+                        sessionRows(vm.sessions(in: nil))
+                    } header: {
+                        sectionHeader(icon: "bubble.left", title: "对话")
+                    }
+
+                    ForEach(vm.projects) { project in
+                        Section {
+                            let list = vm.sessions(in: project.id)
+                            if list.isEmpty {
+                                Text("还没有对话")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            sessionRows(list)
                             Button {
-                                vm.activeSessionId = session.id
-                                activeSheet = nil
+                                vm.createNewSession(in: project.id)
+                                closeSidePanel()
                             } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "bubble.left")
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(session.id == vm.activeSessionId ? DeepSeekTheme.brandBlue : .secondary)
-                                    Text(session.title)
-                                        .font(.subheadline.weight(session.id == vm.activeSessionId ? .semibold : .regular))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
-                                    Spacer()
-                                }
+                                Label("在此项目中新建对话", systemImage: "plus")
+                                    .font(.footnote)
                             }
+                        } header: {
+                            sectionHeader(icon: "folder.fill", title: project.name)
                         }
-                        .onDelete { offsets in
-                            let list = vm.filteredSessions
-                            for idx in offsets {
-                                vm.deleteSession(list[idx].id)
-                            }
+                    }
+
+                    Section {
+                        Button {
+                            dismissPanelImmediately()
+                            activeSheet = .workspace
+                        } label: {
+                            Label("管理项目…", systemImage: "folder.badge.gearshape")
                         }
                     }
                 }
-                .searchable(text: $vm.sessionSearchQuery, prompt: "搜索历史对话")
+                .searchable(text: $vm.sessionSearchQuery, prompt: "搜索对话")
             }
             .navigationTitle("DeepSeek Pocket")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { activeSheet = nil }
+        }
+    }
+
+    // MARK: - Edge Side Panels (interactive, finger-tracked)
+
+    @ViewBuilder
+    private func sidePanelLayer(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
+        if let side = activeSide {
+            let width = panelWidth(for: side)
+
+            ZStack(alignment: side == .sessions ? .leading : .trailing) {
+                Color.black
+                    .opacity(0.32 * panelProgress)
+                    .ignoresSafeArea()
+                    .onTapGesture { closeSidePanel() }
+                    .gesture(scrimDragGesture)
+
+                sidePanelContent(for: side, scheme: scheme, ink: ink, secondary: secondary)
+                    .frame(width: width)
+                    .frame(maxHeight: .infinity)
+                    .background(DeepSeekTheme.canvas(scheme))
+                    .shadow(
+                        color: .black.opacity(0.18),
+                        radius: 24,
+                        x: side == .sessions ? 12 : -12,
+                        y: 0
+                    )
+                    .offset(x: panelOffset(for: side, width: width))
+            }
+        }
+    }
+
+    private func panelWidth(for side: SidePanel) -> CGFloat {
+        side == .sessions
+            ? min(containerWidth * 0.86, 330)
+            : min(containerWidth * 0.94, 400)
+    }
+
+    private func panelOffset(for side: SidePanel, width: CGFloat) -> CGFloat {
+        // leading panel slides in from -width, trailing panel from +width
+        side == .sessions
+            ? (panelProgress - 1) * width
+            : (1 - panelProgress) * width
+    }
+
+    @ViewBuilder
+    private func sidePanelContent(for side: SidePanel, scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
+        switch side {
+        case .sessions:
+            sessionsPanel(scheme: scheme, ink: ink, secondary: secondary)
+        case .settings:
+            SettingsAndRemoteSheet(
+                vm: vm,
+                onOpenAudit: {
+                    dismissPanelImmediately()
+                    activeSheet = .audit
+                },
+                onClose: { closeSidePanel() }
+            )
+        }
+    }
+
+    /// 全局收起键盘：不依赖哪个子视图持有 FocusState。
+    private func endEditing() {
+        #if canImport(UIKit) && os(iOS)
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil
+        )
+        #endif
+    }
+
+    private func openSidePanel(_ side: SidePanel) {
+        endEditing()
+        if activeSide == side {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) { panelProgress = 1 }
+            return
+        }
+        let wasClosed = activeSide == nil
+        activeSide = side
+        if wasClosed {
+            panelProgress = 0
+            withAnimation(.spring(response: 0.36, dampingFraction: 0.88)) { panelProgress = 1 }
+        } else {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) { panelProgress = 1 }
+        }
+    }
+
+    private func closeSidePanel() {
+        withAnimation(.easeOut(duration: 0.22)) { panelProgress = 0 }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(260))
+            if panelProgress == 0 { activeSide = nil }
+        }
+    }
+
+    private func dismissPanelImmediately() {
+        activeSide = nil
+        panelProgress = 0
+    }
+
+    /// One gesture serves opening (edge swipe) and closing (swipe the panel away),
+    /// because both are just `progress = start + translation * direction / width`.
+    private var drawerGesture: some Gesture {
+        DragGesture(minimumDistance: 5, coordinateSpace: .global)
+            .onChanged { value in
+                // 面板已经打开时，这里什么都不做：关不关由"点页外遮罩"决定，
+                // 不再劫持面板内部的横向滑动（列表左滑删除要用）。
+                guard activeSide == nil else { return }
+                let dx = value.translation.width
+                let dy = value.translation.height
+
+                if !isDraggingDrawer {
+                    guard abs(dx) > 14, abs(dx) > abs(dy) * 1.6 else { return }
+                    if value.startLocation.x <= 28 {
+                        activeSide = .sessions
+                    } else if value.startLocation.x >= containerWidth - 28 {
+                        activeSide = .settings
+                    } else {
+                        return
+                    }
+                    panelProgress = 0
+                    isDraggingDrawer = true
+                    dragStartProgress = 0
+                    dragAnchorX = dx
+                }
+
+                guard let side = activeSide else { return }
+                let dir: CGFloat = side == .sessions ? 1 : -1
+                let width = panelWidth(for: side)
+                let next = dragStartProgress + ((dx - dragAnchorX) * dir) / width
+                panelProgress = min(max(next, 0), 1)
+            }
+            .onEnded { value in
+                defer { isDraggingDrawer = false }
+                guard isDraggingDrawer, let side = activeSide else { return }
+                let dir: CGFloat = side == .sessions ? 1 : -1
+                let width = panelWidth(for: side)
+                let travelled = value.predictedEndTranslation.width - dragAnchorX
+                let projected = min(max(dragStartProgress + (travelled * dir) / width, 0), 1)
+                dragStartProgress = 0
+                if projected > 0.5 {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { panelProgress = 1 }
+                } else {
+                    closeSidePanel()
                 }
             }
+    }
+
+    /// 只有点在"页外遮罩"上拖，才会把面板推回去。
+    private var scrimDragGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard let side = activeSide else { return }
+                if !isDraggingScrim {
+                    isDraggingScrim = true
+                    dragStartProgress = panelProgress
+                    dragAnchorX = value.translation.width
+                }
+                let dir: CGFloat = side == .sessions ? 1 : -1
+                let width = panelWidth(for: side)
+                let next = dragStartProgress + ((value.translation.width - dragAnchorX) * dir) / width
+                panelProgress = min(max(next, 0), 1)
+            }
+            .onEnded { value in
+                defer { isDraggingScrim = false }
+                guard isDraggingScrim, let side = activeSide else { return }
+                let dir: CGFloat = side == .sessions ? 1 : -1
+                let width = panelWidth(for: side)
+                let travelled = value.predictedEndTranslation.width - dragAnchorX
+                let projected = min(max(dragStartProgress + (travelled * dir) / width, 0), 1)
+                dragStartProgress = 0
+                if projected > 0.5 {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { panelProgress = 1 }
+                } else {
+                    closeSidePanel()
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func avatarCircle(size: CGFloat, scheme: ColorScheme) -> some View {
+        ZStack {
+            Circle().fill(DeepSeekTheme.brandSoftFill(scheme))
+            avatarGlyph(size: size)
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+    }
+
+    #if canImport(UIKit)
+    @ViewBuilder
+    private func avatarGlyph(size: CGFloat) -> some View {
+        if let data = vm.avatarImageData, let image = UIImage(data: data) {
+            Image(uiImage: image).resizable().scaledToFill()
+        } else {
+            emojiOrPerson(size: size)
+        }
+    }
+    #else
+    @ViewBuilder
+    private func avatarGlyph(size: CGFloat) -> some View {
+        emojiOrPerson(size: size)
+    }
+    #endif
+
+    @ViewBuilder
+    private func emojiOrPerson(size: CGFloat) -> some View {
+        #if canImport(UIKit)
+        if let icon = UIImage(named: "AvatarDefault") {
+            Image(uiImage: icon)
+                .resizable()
+                .scaledToFill()
+        } else {
+            fallbackAvatarIcon(size: size)
+        }
+        #else
+        fallbackAvatarIcon(size: size)
+        #endif
+    }
+
+    @ViewBuilder
+    private func fallbackAvatarIcon(size: CGFloat) -> some View {
+        Image(systemName: "person.fill")
+            .font(.system(size: size * 0.42, weight: .semibold))
+            .foregroundStyle(DeepSeekTheme.brandBlue)
+    }
+
+    @ViewBuilder
+    private func sessionRows(_ list: [ChatSession]) -> some View {
+        ForEach(list) { session in
+            Button {
+                vm.activateSession(session.id)
+                closeSidePanel()
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: session.projectId == nil ? "bubble.left" : "doc.text")
+                        .font(.system(size: 13))
+                        .foregroundStyle(session.id == vm.activeSessionId ? DeepSeekTheme.brandBlue : .secondary)
+                    Text(session.title)
+                        .font(.subheadline.weight(session.id == vm.activeSessionId ? .semibold : .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer()
+                }
+            }
+        }
+        .onDelete { offsets in
+            for idx in offsets { vm.deleteSession(list[idx].id) }
+        }
+    }
+
+    private func sectionHeader(icon: String, title: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+            Text(title)
+            Spacer()
         }
     }
 

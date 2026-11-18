@@ -1,4 +1,8 @@
 import SwiftUI
+import PhotosUI
+#if canImport(UIKit)
+import UIKit
+#endif
 import DeepSeekCore
 
 // MARK: - Beginner-Friendly Account & Settings Sheet (Google Gemini Mobile Style)
@@ -6,6 +10,9 @@ import DeepSeekCore
 public struct SettingsAndRemoteSheet: View {
     @Bindable public var vm: AppViewModel
     public var onOpenAudit: () -> Void
+    /// When the sheet is hosted inside a side panel there is no presentation to
+    /// dismiss, so the host supplies its own close handler.
+    public var onClose: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
 
     @State private var apiKeyDraft: String = ""
@@ -13,15 +20,96 @@ public struct SettingsAndRemoteSheet: View {
     @State private var modelDraft: String = ""
     @State private var showCustomEndpoint: Bool = false
     @State private var showScanner: Bool = false
+    @State private var avatarItem: PhotosPickerItem?
 
-    public init(vm: AppViewModel, onOpenAudit: @escaping () -> Void = {}) {
+    public init(
+        vm: AppViewModel,
+        onOpenAudit: @escaping () -> Void = {},
+        onClose: (() -> Void)? = nil
+    ) {
         self.vm = vm
         self.onOpenAudit = onOpenAudit
+        self.onClose = onClose
     }
+
+    private func close() {
+        if let onClose {
+            onClose()
+        } else {
+            dismiss()
+        }
+    }
+
+    private var profileAvatar: some View {
+        ZStack {
+            Circle().fill(DeepSeekTheme.brandSoftFill(.light)).frame(width: 54, height: 54)
+            profileAvatarContent
+        }
+    }
+
+    @ViewBuilder
+    private var emojiAvatar: some View {
+        #if canImport(UIKit)
+        if let icon = UIImage(named: "AvatarDefault") {
+            Image(uiImage: icon).resizable().scaledToFill()
+                .frame(width: 54, height: 54)
+                .clipShape(Circle())
+        } else {
+            Image(systemName: "person.fill").font(.system(size: 24))
+        }
+        #else
+        Image(systemName: "person.fill").font(.system(size: 24))
+        #endif
+    }
+
+    #if canImport(UIKit)
+    @ViewBuilder
+    private var profileAvatarContent: some View {
+        if let data = vm.avatarImageData, let image = UIImage(data: data) {
+            Image(uiImage: image).resizable().scaledToFill()
+                .frame(width: 54, height: 54)
+                .clipShape(Circle())
+        } else {
+            emojiAvatar
+        }
+    }
+    #else
+    @ViewBuilder
+    private var profileAvatarContent: some View { emojiAvatar }
+    #endif
 
     public var body: some View {
         NavigationStack {
             Form {
+                Section("个人资料") {
+                    HStack(spacing: 14) {
+                        profileAvatar
+                        VStack(alignment: .leading, spacing: 4) {
+                            TextField("昵称", text: Binding(
+                                get: { vm.displayName },
+                                set: { vm.updateDisplayName($0) }
+                            ))
+                            .font(.subheadline.weight(.medium))
+                            Text("只保存在本机，用于顶部头像与抽屉抬头")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    PhotosPicker(selection: $avatarItem, matching: .images) {
+                        Label("从相册选择头像", systemImage: "photo")
+                    }
+
+                    #if canImport(UIKit)
+                    if vm.avatarImageData != nil {
+                        Button("恢复默认头像（App 图标）") {
+                            vm.updateAvatarImage(nil)
+                        }
+                        .font(.footnote)
+                    }
+                    #endif
+                }
+
                 Section("接口与账号（选择你要使用的 AI 来源）") {
                     LabeledContent("当前使用", value: vm.providerConfig.friendlyEndpointLabel)
                         .font(.footnote)
@@ -132,16 +220,6 @@ public struct SettingsAndRemoteSheet: View {
                     }
                 }
 
-                Section("创作模式 (dsh-purge)") {
-                    Toggle("一键开启无限制模式", isOn: Binding(
-                        get: { vm.isUnrestrictedMode },
-                        set: { vm.setUnrestrictedMode($0) }
-                    ))
-                    Text("基于 dsh-purge 纯净理念：跳过空洞说教与免责声明，专注硬核推演与代码执行。仅在本机生效，无外部依赖。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
                 Section("连接我的电脑（可选高级功能）") {
                     Picker("运行位置", selection: $vm.engineMode) {
                         Text("在手机本机运行").tag(EngineMode.onDeviceHarness)
@@ -167,7 +245,7 @@ public struct SettingsAndRemoteSheet: View {
                 }
 
                 Section("安全与隐私保护") {
-                    Picker("AI 修改本地文件前", selection: $vm.approvalPolicy) {
+                    Picker("AI 修改项目文件前", selection: $vm.approvalPolicy) {
                         Text("每次先让我确认（推荐）").tag(ApprovalPolicy.readOnlyAuto)
                         Text("所有操作都让我确认").tag(ApprovalPolicy.askEveryTool)
                         Text("在当前文件夹内自动完成").tag(ApprovalPolicy.fullSandboxAuto)
@@ -177,13 +255,37 @@ public struct SettingsAndRemoteSheet: View {
 
                     Button {
                         commitChanges()
-                        dismiss()
+                        close()
                         onOpenAudit()
                     } label: {
                         LabeledContent("查看隐私与联网记录", value: "仅直连所选接口")
                             .font(.footnote)
                     }
                     .foregroundStyle(.primary)
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("开源 · 仅供技术交流")
+                            .font(.footnote.weight(.semibold))
+                        Text("本项目以 MIT 协议开源，用于 iOS 本地 Agent、提示词工程与沙箱机制的技术研究与交流。作者只提供代码，不提供任何服务、内容或数据；软件的使用方式、接入的接口、输入输出的内容，全部由使用者自行决定并自行承担，与作者无关。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text("本项目与 DeepSeek、Apple 均无隶属关系，未获其背书。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 2)
+
+                    Link(destination: URL(string: "https://github.com/FelixDemon1/deepseek-pocket")!) {
+                        LabeledContent("GitHub", value: "FelixDemon1/deepseek-pocket")
+                            .font(.footnote)
+                    }
+
+                    LabeledContent("版本", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0")
+                        .font(.footnote)
+                } header: {
+                    Text("关于")
                 }
             }
             .navigationTitle("账号与设置")
@@ -194,13 +296,24 @@ public struct SettingsAndRemoteSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") {
                         commitChanges()
-                        dismiss()
+                        close()
                     }
                 }
             }
             .onAppear {
                 baseURLDraft = vm.providerConfig.baseURL.absoluteString
                 modelDraft = vm.providerConfig.model
+            }
+            .onChange(of: avatarItem) {
+                guard let item = avatarItem else { return }
+                #if canImport(UIKit)
+                Task {
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        vm.updateAvatarImage(data)
+                    }
+                    avatarItem = nil
+                }
+                #endif
             }
         }
     }

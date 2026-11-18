@@ -282,7 +282,7 @@ public struct DeepSeekClient: ModelStreamingTransport {
         if !isReasoner {
             payload["temperature"] = config.temperature
         }
-        if config.enableTools && !tools.isEmpty {
+        if !tools.isEmpty {
             payload["tools"] = tools
         }
         return payload

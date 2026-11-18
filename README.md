@@ -2,6 +2,10 @@
 
 iOS 原生极简 AI Agent 工作区（Swift 6 · iOS 17–27+ · 0 字节遥测）。
 
+> **开源 · 仅供技术交流**
+> 本项目以 MIT 协议开源，用于 iOS 本地 Agent、提示词工程与沙箱机制的技术研究与交流。作者只提供代码，不提供任何服务、内容或数据；软件的使用方式、接入的接口、输入输出的内容，全部由使用者自行决定并自行承担，与作者无关。
+> 本项目与 DeepSeek、Apple 均无隶属关系，未获其背书。
+
 <p align="center">
   <img src="docs/screenshots/home.png" width="22%" alt="Gemini Style Home" />
   <img src="docs/screenshots/stream.png" width="22%" alt="Perched Companion & Diff Approval" />

@@ -66,8 +66,7 @@ public actor AgentHarness {
             workingHistory.insert(ChatMessage(role: .system, content: Self.defaultSystemPrompt), at: 0)
         }
         // AX: Attach live workspace file snapshot so the Agent can directly `read_file` without blind `list_files` round-trips.
-        if config.enableTools,
-           let summary = toolset.workspaceSummary(),
+        if let summary = toolset.workspaceSummary(),
            let sysIdx = workingHistory.firstIndex(where: { $0.role == .system }),
            !workingHistory[sysIdx].content.contains("<workspace_files>") {
             workingHistory[sysIdx].content += "\n<workspace_files>\(summary)</workspace_files>"
@@ -101,7 +100,7 @@ public actor AgentHarness {
                 config: config,
                 apiKey: apiKey,
                 messages: workingHistory,
-                includeWorkspaceTools: config.enableTools,
+                includeWorkspaceTools: true,
                 firewall: firewall
             )
 

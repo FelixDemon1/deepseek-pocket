@@ -29,6 +29,8 @@ struct DeepSeekGoApp: App {
                         viewModel.requestedSheetName = "settings"
                     } else if CommandLine.arguments.contains("--presets") {
                         viewModel.requestedSheetName = "presets"
+                    } else if CommandLine.arguments.contains("--lift-probe") {
+                        SandboxLiftProbe.log()
                     } else if let pendingPrompt = QuickPromptBridge.shared.consumePendingPrompt() {
                         viewModel.sendOrSteer(text: pendingPrompt)
                     }

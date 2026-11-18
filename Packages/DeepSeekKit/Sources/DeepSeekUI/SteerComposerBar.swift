@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 import DeepSeekCore
 
 /// Google Gemini-inspired Floating Composer with the Pixel Whale-Girl perched right on top of the dialog box.
@@ -14,6 +15,7 @@ public struct SteerComposerBar: View {
     @FocusState private var isFocused: Bool
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var showPhotoPicker: Bool = false
+    @State private var showFileImporter: Bool = false
 
     public init(
         text: Binding<String>,
@@ -103,14 +105,11 @@ public struct SteerComposerBar: View {
 
                 HStack(spacing: 8) {
                     Menu {
+                        Button { showFileImporter = true } label: {
+                            Label("上传文件（代码/文本/PDF）", systemImage: "doc.badge.plus")
+                        }
                         Button { showPhotoPicker = true } label: {
-                            Label("识图提问（选相册图片）", systemImage: "photo")
-                        }
-                        Button(action: onOpenWorkspace) {
-                            Label("我的本地文件", systemImage: "folder")
-                        }
-                        Button(action: onOpenPresets) {
-                            Label("回答风格：\(vm.activePreset.title)", systemImage: "sparkles")
+                            Label("上传图片（识图提问）", systemImage: "photo")
                         }
                     } label: {
                         Image(systemName: "plus")
@@ -121,17 +120,46 @@ public struct SteerComposerBar: View {
                     }
 
                     let isR1 = vm.providerConfig.model.lowercased().contains("reasoner") || vm.providerConfig.model.lowercased().contains("r1")
+                    let modeActive = vm.activePresetId != "default_agent"
                     toggleChip(title: "深度思考", icon: "sparkles", active: isR1, scheme: scheme, secondary: secondary) {
                         var next = vm.providerConfig
                         next.model = isR1 ? "deepseek-chat" : "deepseek-reasoner"
                         vm.updateProviderConfig(next)
                     }
 
-                    toggleChip(title: "读写文件", icon: "folder", active: vm.providerConfig.enableTools, scheme: scheme, secondary: secondary) {
-                        var next = vm.providerConfig
-                        next.enableTools.toggle()
-                        vm.updateProviderConfig(next)
+                    Menu {
+                        ForEach(vm.presets) { preset in
+                            Button {
+                                _ = vm.selectPreset(preset)
+                            } label: {
+                                Label(preset.title,
+                                      systemImage: preset.id == vm.activePresetId ? "checkmark" : preset.icon)
+                            }
+                        }
+                        Divider()
+                        Button(action: onOpenPresets) {
+                            Label("模式说明…", systemImage: "info.circle")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: vm.activePreset.icon)
+                                .font(.system(size: 11, weight: .medium))
+                            Text(vm.activePreset.title)
+                                .font(.system(size: 12, weight: .medium))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8, weight: .semibold))
+                        }
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(modeActive ? DeepSeekTheme.brandSoftFill(scheme) : Color.clear))
+                        .overlay(
+                            Capsule().stroke(modeActive ? DeepSeekTheme.brandBlue.opacity(0.3) : DeepSeekTheme.hairline(scheme), lineWidth: 0.75)
+                        )
+                        .foregroundStyle(modeActive ? DeepSeekTheme.brandBlue : secondary)
                     }
+                    .buttonStyle(.plain)
 
                     Spacer()
 
@@ -163,6 +191,29 @@ public struct SteerComposerBar: View {
                     await vm.attachPhotoDataForOCR(data)
                 }
                 selectedPhotoItem = nil
+            }
+        }
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls):
+                var importedNames: [String] = []
+                for url in urls {
+                    if let name = vm.importDocumentToWorkspace(from: url) {
+                        importedNames.append(name)
+                    }
+                }
+                if !importedNames.isEmpty {
+                    let filesTag = "[已上传项目文件: \(importedNames.joined(separator: ", "))]\n"
+                    if !text.contains(filesTag) {
+                        text = filesTag + text
+                    }
+                }
+            case .failure(let error):
+                vm.errorBanner = "导入文件失败：\(error.localizedDescription)"
             }
         }
     }

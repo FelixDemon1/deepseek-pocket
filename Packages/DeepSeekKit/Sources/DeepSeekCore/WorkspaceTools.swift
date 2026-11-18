@@ -42,6 +42,33 @@ public struct WorkspaceToolset: Sendable {
         }
     }
 
+    /// Rebuilds a toolset for a project from its persisted bookmark.
+    public init?(bookmark: Data) {
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else {
+            return nil
+        }
+        _ = url.startAccessingSecurityScopedResource()
+        self.rootURL = url.resolvingSymlinksInPath()
+        self.isExternalSecurityScoped = true
+    }
+
+    /// Bookmark data for a folder picked through `.fileImporter` / `UIDocumentPicker`.
+    public static func makeBookmark(for folderURL: URL) -> Data? {
+        let accessed = folderURL.startAccessingSecurityScopedResource()
+        if accessed { folderURL.stopAccessingSecurityScopedResource() }
+        return try? folderURL.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+    }
+
+    /// The built-in sandbox folder, ignoring any legacy single-folder bookmark.
+    public static func builtIn() -> WorkspaceToolset {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let url = docs.appendingPathComponent("Workspace", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return WorkspaceToolset(rootURL: url)
+    }
+
     /// Saves an Apple official Security-Scoped Bookmark for any folder chosen by the user in iOS `Files.app`
     /// (e.g. iCloud Drive, On My iPhone, Working Copy Git repo, USB drive, or SMB share).
     public static func saveExternalFolderBookmark(_ folderURL: URL) throws -> WorkspaceToolset {

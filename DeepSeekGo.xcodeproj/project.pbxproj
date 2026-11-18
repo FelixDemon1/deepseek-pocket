@@ -95,6 +95,11 @@
 				TargetAttributes = {
 					A100000F2B00000100000001 = {
 						CreatedOnToolsVersion = 16.0;
+						SystemCapabilities = {
+							com.apple.ApplicationGroups.iOS = {
+								enabled = 1;
+							};
+						};
 					};
 				};
 			};

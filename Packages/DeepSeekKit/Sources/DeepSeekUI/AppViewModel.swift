@@ -1,6 +1,9 @@
 import Foundation
 import Observation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 import DeepSeekCore
 
 @MainActor
@@ -41,6 +44,19 @@ public final class AppViewModel {
     public var remoteLaunchInput: String = ""
     public var remoteConnectedHost: String?
     public var remoteSessions: [DshRemoteSessionSummary] = []
+
+    // 个人资料
+    public var displayName: String = ""
+    public var avatarEmoji: String = "🐳"
+    public var avatarImageData: Data?
+
+    /// 首次切到无限制模式时弹一次说明（体感入口）
+    public var purgeIntroPresented: Bool = false
+    public var hasSeenPurgeIntro: Bool = false
+
+    // 项目（对话可归属某个真实文件夹）
+    public var projects: [WorkspaceProject] = []
+    public var activeProjectId: UUID?
 
     // Privacy, Workspace & Companion Pet
     public var auditEntries: [NetworkAuditEntry] = []
@@ -88,6 +104,10 @@ public final class AppViewModel {
             activeSessionId = initial.id
         } else if activeSessionId == nil {
             activeSessionId = sessions.first?.id
+        }
+        if let id = activeSessionId {
+            activeProjectId = sessions.first(where: { $0.id == id })?.projectId
+            rebindToolset()
         }
 
         Task {
@@ -151,6 +171,26 @@ public final class AppViewModel {
     public func resetToBuiltInWorkspace() {
         self.toolset = WorkspaceToolset.clearExternalFolderBookmark()
         self.noticeBanner = "已切回应用内置沙盒目录"
+    }
+
+    public func importDocumentToWorkspace(from url: URL) -> String? {
+        let isSec = url.startAccessingSecurityScopedResource()
+        defer {
+            if isSec { url.stopAccessingSecurityScopedResource() }
+        }
+        do {
+            let filename = url.lastPathComponent
+            let destURL = try toolset.resolveSafeURL(filename)
+            let data = try Data(contentsOf: url)
+            try data.write(to: destURL, options: .atomic)
+            let bytes = data.count
+            let sizeStr = bytes < 1024 ? "\(bytes) B" : "\(bytes / 1024) KB"
+            noticeBanner = "已导入项目文件：\(filename) (\(sizeStr))"
+            return filename
+        } catch {
+            errorBanner = "导入文件失败：\(error.localizedDescription)"
+            return nil
+        }
     }
 
     public var hasAPIKeyConfigured: Bool {
@@ -241,6 +281,18 @@ public final class AppViewModel {
     public func selectPreset(_ preset: PromptPreset) -> Bool {
         previousPresetSnapshotId = activePresetId
         activePresetId = preset.id
+        // dsh-purge 的引擎级一半：无限制模式不再让审批弹窗打断工具调用
+        if preset.id == PurgeProfile.presetID {
+            approvalPolicy = .fullSandboxAuto
+            requireFaceIDForApprovals = false
+            if !hasSeenPurgeIntro {
+                purgeIntroPresented = true
+                hasSeenPurgeIntro = true
+                persistSettings()
+            }
+        } else {
+            approvalPolicy = .readOnlyAuto
+        }
         persistSettings()
         applyActivePresetToCurrentSession()
         return true
@@ -267,19 +319,21 @@ public final class AppViewModel {
     }
 
     public var isUnrestrictedMode: Bool {
-        activePresetId == "unrestricted_creative"
+        activePresetId == PurgeProfile.presetID
     }
 
+    /// Full client-side purge: prompt layer + approval gate, exactly the three
+    /// things the desktop `dsh-purge` patch rewrites in a harness it owns.
     public func setUnrestrictedMode(_ enabled: Bool) {
         if enabled {
-            if let p = presets.first(where: { $0.id == "unrestricted_creative" }) {
+            if let p = presets.first(where: { $0.id == PurgeProfile.presetID }) {
                 _ = selectPreset(p)
-                noticeBanner = "已开启无限制创作模式 (dsh-purge)"
+                noticeBanner = "无限制模式已开：提示词已清洗，工具调用免审批"
             }
         } else {
             if let p = presets.first(where: { $0.id == "default_agent" }) {
                 _ = selectPreset(p)
-                noticeBanner = "已恢复默认回答风格"
+                noticeBanner = "已恢复默认：提示词与写文件审批都回来了"
             }
         }
     }
@@ -314,15 +368,132 @@ public final class AppViewModel {
 
     // MARK: - Session Lifecycle, Forking & Regenerate
 
-    public func createNewSession() {
+    public func createNewSession(in projectId: UUID? = nil) {
         let session = ChatSession(
             title: "新对话",
+            projectId: projectId,
             engineMode: engineMode,
             messages: [ChatMessage(role: .system, content: activePreset.systemPrompt)]
         )
         sessions.insert(session, at: 0)
-        activeSessionId = session.id
+        activateSession(session.id)
         persistSessions()
+    }
+
+    /// 切换对话时把工具沙盒切到该对话所属项目（默认工作区 / 项目文件夹）。
+    public func activateSession(_ id: UUID) {
+        activeSessionId = id
+        activeProjectId = sessions.first(where: { $0.id == id })?.projectId
+        rebindToolset()
+    }
+
+    public func rebindToolset() {
+        if let pid = activeProjectId,
+           let project = projects.first(where: { $0.id == pid }),
+           let bookmark = project.bookmark,
+           let bound = WorkspaceToolset(bookmark: bookmark) {
+            toolset = bound
+        } else {
+            toolset = WorkspaceToolset.builtIn()
+        }
+    }
+
+    // MARK: - 项目
+
+    public func sessions(in projectId: UUID?) -> [ChatSession] {
+        let q = sessionSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sessions.filter { session in
+            guard session.projectId == projectId else { return false }
+            guard !q.isEmpty else { return true }
+            return session.title.localizedCaseInsensitiveContains(q) ||
+                session.messages.contains { $0.content.localizedCaseInsensitiveContains(q) }
+        }
+    }
+
+    public func rootURL(for project: WorkspaceProject) -> URL? {
+        guard let bookmark = project.bookmark,
+              let ts = WorkspaceToolset(bookmark: bookmark) else { return nil }
+        return ts.rootURL
+    }
+
+    public func projectName(for id: UUID?) -> String {
+        guard let id, let p = projects.first(where: { $0.id == id }) else { return "默认工作区" }
+        return p.name
+    }
+
+    @discardableResult
+    public func addProject(folderURL: URL, name: String? = nil) -> Bool {
+        guard let bookmark = WorkspaceToolset.makeBookmark(for: folderURL) else {
+            errorBanner = "无法获取该文件夹的访问书签"
+            return false
+        }
+        let project = WorkspaceProject(name: name ?? folderURL.lastPathComponent, bookmark: bookmark)
+        projects.append(project)
+        persistSettings()
+        noticeBanner = "已添加项目：\(project.name)"
+        return true
+    }
+
+    // MARK: - 个人资料
+
+    public func updateDisplayName(_ name: String) {
+        displayName = String(name.prefix(24))
+        persistSettings()
+    }
+
+    public func updateAvatarEmoji(_ emoji: String) {
+        avatarEmoji = emoji
+        avatarImageData = nil
+        persistSettings()
+    }
+
+    #if canImport(UIKit)
+    public func updateAvatarImage(_ data: Data?) {
+        guard let data, let image = UIImage(data: data) else {
+            avatarImageData = nil
+            persistSettings()
+            return
+        }
+        let side: CGFloat = 256
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: side, height: side))
+        let scaled = renderer.image { _ in
+            let scale = max(side / image.size.width, side / image.size.height)
+            let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+            image.draw(in: CGRect(x: (side - size.width) / 2, y: (side - size.height) / 2,
+                                  width: size.width, height: size.height))
+        }
+        avatarImageData = scaled.jpegData(compressionQuality: 0.85)
+        persistSettings()
+    }
+    #endif
+
+    public func renameProject(_ id: UUID, to name: String) {
+        guard let idx = projects.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        projects[idx].name = trimmed
+        persistSettings()
+    }
+
+    public func deleteProject(_ id: UUID) {
+        for idx in sessions.indices where sessions[idx].projectId == id {
+            sessions[idx].projectId = nil
+        }
+        projects.removeAll { $0.id == id }
+        persistSessions()
+        persistSettings()
+        if activeProjectId == id {
+            activeSessionId.map { activateSession($0) } ?? rebindToolset()
+            activeProjectId = nil
+        }
+        noticeBanner = "项目已删除，其中的对话已移回默认工作区"
+    }
+
+    public func moveSession(_ id: UUID, to projectId: UUID?) {
+        guard let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].projectId = projectId
+        persistSessions()
+        if activeSessionId == id { activateSession(id) }
     }
 
     public func deleteSession(_ id: UUID) {
@@ -811,6 +982,11 @@ public final class AppViewModel {
         var faceID: Bool
         var appearance: AppearancePreference
         var activePresetId: String
+        var displayName: String?
+        var avatarEmoji: String?
+        var avatarImageData: Data?
+        var projects: [WorkspaceProject]?
+        var hasSeenPurgeIntro: Bool?
     }
 
     private func persistSettings() {
@@ -819,7 +995,12 @@ public final class AppViewModel {
             policy: approvalPolicy,
             faceID: requireFaceIDForApprovals,
             appearance: appearance,
-            activePresetId: activePresetId
+            activePresetId: activePresetId,
+            displayName: displayName,
+            avatarEmoji: avatarEmoji,
+            avatarImageData: avatarImageData,
+            projects: projects,
+            hasSeenPurgeIntro: hasSeenPurgeIntro
         )
         if let data = try? JSONEncoder().encode(s) {
             UserDefaults.standard.set(data, forKey: Self.settingsKey)
@@ -849,6 +1030,11 @@ public final class AppViewModel {
             requireFaceIDForApprovals = s.faceID
             appearance = s.appearance
             activePresetId = s.activePresetId
+            displayName = s.displayName ?? ""
+            avatarEmoji = s.avatarEmoji ?? "🐳"
+            avatarImageData = s.avatarImageData
+            projects = s.projects ?? []
+            hasSeenPurgeIntro = s.hasSeenPurgeIntro ?? false
         }
         if let data = UserDefaults.standard.data(forKey: Self.customPresetsKey),
            let customs = try? JSONDecoder().decode([PromptPreset].self, from: data) {
