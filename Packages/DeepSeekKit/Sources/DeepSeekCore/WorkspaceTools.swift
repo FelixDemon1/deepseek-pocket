@@ -18,19 +18,56 @@ public enum WorkspaceSandboxError: LocalizedError, Equatable, Sendable {
     }
 }
 
-/// On-device sandboxed tool suite mounted inside `Documents/Workspace` (accessible in iOS Files.app).
+/// On-device sandboxed tool suite mounted inside `Documents/Workspace` OR a user-authorized external folder
+/// granted via Apple's official `UIDocumentPicker` / `.fileImporter` Security-Scoped Bookmark API.
 public struct WorkspaceToolset: Sendable {
     public let rootURL: URL
+    public let isExternalSecurityScoped: Bool
+
+    private static let externalBookmarkKey = "tide_external_workspace_bookmark_v1"
 
     public init(rootURL: URL? = nil) {
         if let rootURL {
             self.rootURL = rootURL.resolvingSymlinksInPath()
+            self.isExternalSecurityScoped = false
+        } else if let bookmarked = Self.restoreBookmarkedFolder() {
+            self.rootURL = bookmarked.resolvingSymlinksInPath()
+            self.isExternalSecurityScoped = true
         } else {
             let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
                 ?? FileManager.default.temporaryDirectory
             self.rootURL = docs.appendingPathComponent("Workspace", isDirectory: true).resolvingSymlinksInPath()
+            self.isExternalSecurityScoped = false
+            try? FileManager.default.createDirectory(at: self.rootURL, withIntermediateDirectories: true)
         }
-        try? FileManager.default.createDirectory(at: self.rootURL, withIntermediateDirectories: true)
+    }
+
+    /// Saves an Apple official Security-Scoped Bookmark for any folder chosen by the user in iOS `Files.app`
+    /// (e.g. iCloud Drive, On My iPhone, Working Copy Git repo, USB drive, or SMB share).
+    public static func saveExternalFolderBookmark(_ folderURL: URL) throws -> WorkspaceToolset {
+        let accessed = folderURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { folderURL.stopAccessingSecurityScopedResource() }
+        }
+        let data = try folderURL.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+        UserDefaults.standard.set(data, forKey: externalBookmarkKey)
+        _ = folderURL.startAccessingSecurityScopedResource()
+        return WorkspaceToolset(rootURL: folderURL)
+    }
+
+    public static func clearExternalFolderBookmark() -> WorkspaceToolset {
+        UserDefaults.standard.removeObject(forKey: externalBookmarkKey)
+        return WorkspaceToolset()
+    }
+
+    private static func restoreBookmarkedFolder() -> URL? {
+        guard let data = UserDefaults.standard.data(forKey: externalBookmarkKey) else { return nil }
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else {
+            return nil
+        }
+        _ = url.startAccessingSecurityScopedResource()
+        return url
     }
 
     public static var toolSchemas: [[String: Any]] {

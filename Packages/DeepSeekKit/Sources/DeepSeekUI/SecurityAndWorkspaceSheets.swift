@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 import DeepSeekCore
 
@@ -94,25 +95,55 @@ public struct NetworkAuditSheet: View {
 // MARK: - Minimalist iOS Files.app Workspace Browser
 
 public struct WorkspaceBrowserSheet: View {
-    public let toolset: WorkspaceToolset
+    @Bindable public var vm: AppViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var files: [URL] = []
     @State private var selectedFile: URL?
     @State private var selectedContent: String = ""
     @State private var newFileName: String = ""
     @State private var showingNewFileAlert = false
+    @State private var showingFolderImporter = false
 
-    public init(toolset: WorkspaceToolset) {
-        self.toolset = toolset
+    public init(vm: AppViewModel) {
+        self.vm = vm
     }
+
+    private var toolset: WorkspaceToolset { vm.toolset }
 
     public var body: some View {
         NavigationStack {
             List {
                 Section {
-                    Text("已挂载至系统「文件 App › 我的 iPhone › DeepSeek Go › Workspace」，可与外部编辑器双向同步。")
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(
+                            toolset.isExternalSecurityScoped
+                                ? "当前挂载外部授权目录：\(toolset.rootURL.lastPathComponent)"
+                                : "当前使用内置沙盒目录（系统「文件 App › 我的 iPhone › Tide › Workspace」）。"
+                        )
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+
+                        HStack(spacing: 12) {
+                            Button {
+                                showingFolderImporter = true
+                            } label: {
+                                Label("授权挂载任意外部文件夹", systemImage: "folder.badge.plus")
+                                    .font(.footnote.weight(.medium))
+                            }
+
+                            if toolset.isExternalSecurityScoped {
+                                Button("切回内置目录") {
+                                    vm.resetToBuiltInWorkspace()
+                                    reloadFiles()
+                                }
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                } header: {
+                    Text("苹果官方文件沙盒与外部目录授权")
                 }
 
                 Section("文件 (\(files.count))") {
@@ -181,6 +212,16 @@ public struct WorkspaceBrowserSheet: View {
                     }
                 }
                 Button("取消", role: .cancel) {}
+            }
+            .fileImporter(
+                isPresented: $showingFolderImporter,
+                allowedContentTypes: [.folder],
+                allowsMultipleSelection: false
+            ) { result in
+                if case let .success(urls) = result, let picked = urls.first {
+                    vm.mountExternalWorkspaceFolder(picked)
+                    reloadFiles()
+                }
             }
             .onAppear(perform: reloadFiles)
         }

@@ -35,6 +35,8 @@ public struct SettingsAndRemoteSheet: View {
                             Text(mode.displayName).tag(mode)
                         }
                     }
+
+                    Toggle("显示像素伙伴「小潮」", isOn: $vm.showCompanionPet)
                 }
 
                 Section {
@@ -220,7 +222,7 @@ public struct ProPaywallSheet: View {
                 MinimalBrandMark(size: 56)
 
                 VStack(spacing: 8) {
-                    Text("DeepSeek Go Pro")
+                    Text("Tide Pro")
                         .font(.system(size: 24, weight: .semibold))
                         .foregroundStyle(ink)
                     Text("纯本地专业生产力套件 · 一次买断或按月订阅")
@@ -375,7 +377,7 @@ public struct ShareCardSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
                 MinimalBrandMark(size: 28)
-                Text("DeepSeek Go")
+                Text("Tide")
                     .font(.system(size: 14, weight: .semibold))
                 Spacer()
                 Text("0 Telemetry")

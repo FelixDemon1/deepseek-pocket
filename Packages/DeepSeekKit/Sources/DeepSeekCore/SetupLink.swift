@@ -31,7 +31,7 @@ public struct SetupLink: Equatable, Sendable {
 
     public static func parse(_ url: URL) -> SetupLink? {
         let scheme = url.scheme?.lowercased() ?? ""
-        guard scheme == "deepseekgo" || scheme == "dshgo" else { return nil }
+        guard scheme == "tide" || scheme == "deepseekgo" || scheme == "dshgo" else { return nil }
 
         let host = (url.host ?? "").lowercased()
         let path = url.path.lowercased()

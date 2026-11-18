@@ -97,7 +97,7 @@ public struct RootWorkspaceView: View {
             NetworkAuditSheet(vm: vm)
         }
         .sheet(isPresented: $showWorkspaceSheet) {
-            WorkspaceBrowserSheet(toolset: vm.toolset)
+            WorkspaceBrowserSheet(vm: vm)
         }
         .sheet(isPresented: $showPresetsSheet) {
             PersonaStudioSheet(vm: vm, onShowProPaywall: { showProSheet = true })
@@ -185,6 +185,10 @@ public struct RootWorkspaceView: View {
 
             Spacer()
 
+            if vm.showCompanionPet && !(vm.activeSession?.messages.filter { $0.role != .system }.isEmpty ?? true) {
+                PixelCompanionView(mood: vm.companionMood, scale: 1.55)
+            }
+
             Button {
                 vm.createNewSession()
             } label: {
@@ -248,7 +252,11 @@ public struct RootWorkspaceView: View {
                 Spacer(minLength: 48)
 
                 VStack(spacing: 14) {
-                    MinimalBrandMark(size: 46)
+                    if vm.showCompanionPet {
+                        PixelCompanionView(mood: vm.companionMood, scale: 3.6)
+                    } else {
+                        MinimalBrandMark(size: 46)
+                    }
 
                     Text("有什么可以帮你？")
                         .font(.system(size: 24, weight: .semibold))
@@ -364,7 +372,7 @@ public struct RootWorkspaceView: View {
                         showProSheet = true
                     } label: {
                         HStack {
-                            Label("DeepSeek Go Pro", systemImage: "sparkles.square.filled.on.square")
+                            Label("Tide Pro", systemImage: "sparkles.square.filled.on.square")
                             Spacer()
                             Text(vm.isProUnlocked ? "已激活" : "升级")
                                 .font(.caption)
@@ -413,7 +421,7 @@ public struct RootWorkspaceView: View {
                 }
             }
             .searchable(text: $vm.sessionSearchQuery, prompt: "搜索历史对话与消息")
-            .navigationTitle("DeepSeek Go")
+            .navigationTitle("Tide")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif

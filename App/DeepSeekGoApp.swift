@@ -34,7 +34,8 @@ struct DeepSeekGoApp: App {
     }
 
     private func handleDeepLink(_ url: URL) {
-        guard url.scheme == "deepseekgo" || url.scheme == "dshgo" else { return }
+        let scheme = url.scheme?.lowercased() ?? ""
+        guard scheme == "tide" || scheme == "deepseekgo" || scheme == "dshgo" else { return }
 
         // One-tap onboarding: deepseekgo://setup?base=…&key=…&model=…
         if viewModel.handleSetupURL(url) { return }

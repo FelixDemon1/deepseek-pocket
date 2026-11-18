@@ -42,14 +42,16 @@ public final class AppViewModel {
     public var remoteConnectedHost: String?
     public var remoteSessions: [DshRemoteSessionSummary] = []
 
-    // Privacy, Workspace & Pro Entitlement
+    // Privacy, Workspace, Companion Pet & Pro Entitlement
     public var auditEntries: [NetworkAuditEntry] = []
     public var allowlistInfo: (modelHosts: [String], remoteHosts: [String], webHosts: [String]) = ([], [], [])
     public var activeArtifact: ArtifactPayload?
     public var isProUnlocked: Bool = false
+    public var showCompanionPet: Bool = true
+    public var celebratingTurnCompletion: Bool = false
 
     public let firewall: PrivacyFirewall
-    public let toolset: WorkspaceToolset
+    public var toolset: WorkspaceToolset
     public let proManager: ProEntitlementManager
     private let ocrService = VisionOCRService()
     private let vault: SecretStore
@@ -122,6 +124,30 @@ public final class AppViewModel {
         if m.contains("reasoner") || m.contains("r1") { return "DeepSeek R1" }
         if m.contains("chat") || m.contains("v3") { return "DeepSeek V3" }
         return providerConfig.model.components(separatedBy: "/").last ?? providerConfig.model
+    }
+
+    public var companionMood: CompanionMood {
+        if pendingApproval != nil { return .waitingApproval }
+        if isStreaming {
+            if activeStageText.contains("思考") { return .thinking }
+            return .coding
+        }
+        if celebratingTurnCompletion { return .happy }
+        return .idle
+    }
+
+    public func mountExternalWorkspaceFolder(_ folderURL: URL) {
+        do {
+            self.toolset = try WorkspaceToolset.saveExternalFolderBookmark(folderURL)
+            self.noticeBanner = "已挂载外部目录：\(folderURL.lastPathComponent)"
+        } catch {
+            self.errorBanner = "挂载文件夹失败：\(error.localizedDescription)"
+        }
+    }
+
+    public func resetToBuiltInWorkspace() {
+        self.toolset = WorkspaceToolset.clearExternalFolderBookmark()
+        self.noticeBanner = "已切回应用内置沙盒目录"
     }
 
     public var hasAPIKeyConfigured: Bool {
@@ -630,6 +656,11 @@ public final class AppViewModel {
                 self.isStreaming = false
                 self.activeStageText = ""
                 self.queuedSteers.removeAll()
+                self.celebratingTurnCompletion = true
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(2.8))
+                    self?.celebratingTurnCompletion = false
+                }
                 self.persistSessions()
                 self.onLiveActivityUpdate?("已完成", false)
                 await self.refreshAuditSnapshot()
