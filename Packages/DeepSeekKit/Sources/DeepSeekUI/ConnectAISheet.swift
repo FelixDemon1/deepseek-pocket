@@ -178,8 +178,16 @@ public struct ConnectAISheet: View {
                     }
                 }
             } label: {
-                LabeledContent("厂商", value: provider.name)
-                    .font(.footnote)
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text("厂商")
+                    Spacer()
+                    Text(provider.name)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.footnote)
             }
 
             Text(provider.note)
@@ -238,27 +246,45 @@ public struct ConnectAISheet: View {
             }
 
             DisclosureGroup("我有中转站 / 自建网关的地址", isExpanded: $showAdvanced) {
-                TextField("接口地址（如 https://xxx.com/v1）", text: $baseDraft)
-                    .font(.footnote.monospaced())
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    #endif
-                    .autocorrectionDisabled()
+                labeledField(
+                    title: "① 接口地址",
+                    hint: "中转站给你的那个网址，一般以 /v1 结尾。不是请求头，也不是模型名。",
+                    placeholder: "https://xxx.com/v1"
+                ) {
+                    TextField("https://xxx.com/v1", text: $baseDraft)
+                        .font(.footnote.monospaced())
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        #endif
+                        .autocorrectionDisabled()
+                }
 
-                TextField("模型名称（不知道就留空）", text: $modelDraft)
-                    .font(.footnote.monospaced())
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                    .autocorrectionDisabled()
+                labeledField(
+                    title: "② 模型名称（可不填）",
+                    hint: "填模型 id 用的，比如 gpt-4o-mini、deepseek-chat。不知道就留空，连上后自动挑一个。",
+                    placeholder: "留空即可"
+                ) {
+                    TextField("留空即可", text: $modelDraft)
+                        .font(.footnote.monospaced())
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                        .autocorrectionDisabled()
+                }
 
-                SecureField("口令 / 令牌（没有就留空）", text: $keyDraft)
-                    .font(.footnote.monospaced())
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                    .autocorrectionDisabled()
+                labeledField(
+                    title: "③ 令牌 / 口令（可不填）",
+                    hint: "对方给你的那串 key，通常以 sk- 开头。没有就留空。",
+                    placeholder: "sk-..."
+                ) {
+                    SecureField("sk-...", text: $keyDraft)
+                        .font(.footnote.monospaced())
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                        .autocorrectionDisabled()
+                }
 
                 if !vm.discoveredModels.isEmpty {
                     Menu("从已读到的 \(vm.discoveredModels.count) 个模型里选") {
@@ -345,6 +371,23 @@ public struct ConnectAISheet: View {
             }
         }
         .navigationTitle("导入渠道配置")
+    }
+
+    // MARK: 小工具
+
+    @ViewBuilder
+    private func labeledField<Content: View>(
+        title: String,
+        hint: String,
+        placeholder: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption.weight(.semibold))
+            content()
+            Text(hint).font(.caption2).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
     }
 
     // MARK: 动作

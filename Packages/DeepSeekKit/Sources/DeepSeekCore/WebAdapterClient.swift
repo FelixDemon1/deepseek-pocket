@@ -59,11 +59,45 @@ public struct WebAdapterClient: Sendable {
 
     // MARK: 请求构造
 
+    /// 有些渠道要求先建会话，拿到 id 再发消息。
+    public func createSession(
+        spec: WebAdapterSpec,
+        credential: String,
+        session: URLSession
+    ) async throws -> String? {
+        guard let sessionURL = spec.sessionURL,
+              let url = URL(string: sessionURL),
+              let path = spec.sessionIdPath, !path.isEmpty else { return nil }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        for (key, rawValue) in spec.headers {
+            request.setValue(
+                WebAdapterTemplate.render(rawValue, values: ["token": credential, "model": ""]),
+                forHTTPHeaderField: key
+            )
+        }
+        request.httpBody = Data((spec.sessionBody ?? "{}").utf8)
+
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { return nil }
+        guard (200..<300).contains(http.statusCode) else {
+            throw WebAdapterError.httpError(statusCode: http.statusCode, message: "建会话失败")
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let id = WebJSONPath.string(in: object, path: path) else {
+            throw WebAdapterError.upstream("建会话成功但没解析到 session id（路径 \(path)）")
+        }
+        return id
+    }
+
     public func makeRequest(
         spec: WebAdapterSpec,
         credential: String,
         model: String,
-        messages: [ChatMessage]
+        messages: [ChatMessage],
+        sessionID: String? = nil
     ) throws -> URLRequest {
         let token = credential.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { throw WebAdapterError.missingCredential }
@@ -85,6 +119,7 @@ public struct WebAdapterClient: Sendable {
         let values: [String: String] = [
             "token": token,
             "model": model,
+            "session_id": WebAdapterTemplate.jsonEscape(sessionID ?? ""),
             "prompt": WebAdapterTemplate.jsonEscape(prompt),
             "messages_json": Self.messagesJSON(messages),
             "local_conversation": UUID().uuidString.lowercased(),
@@ -168,8 +203,12 @@ public struct WebAdapterClient: Sendable {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    let sessionID = try await createSession(
+                        spec: spec, credential: credential, session: session
+                    )
                     let request = try makeRequest(
-                        spec: spec, credential: credential, model: model, messages: messages
+                        spec: spec, credential: credential, model: model,
+                        messages: messages, sessionID: sessionID
                     )
                     let (bytes, response) = try await session.bytes(for: request)
                     if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {

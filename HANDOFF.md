@@ -141,6 +141,24 @@ Packages/DeepSeekKit/Sources/DeepSeekUI/
 - 有的站点 token 带引号或 `Bearer ` 前缀，`WebCredentialParser` 已剥
 - 请求体模板必须保持合法 JSON，`makeRequest` 会先 `JSONSerialization` 校验，坏了直接抛 `badSpec`
 
+### 3.5.1 会话引导（DeepSeek 网页版必须）
+
+真机实测报错：`HTTP 422 Failed to deserialize the JSON body into the target type: chat_session_id: invalid type: null`。
+**不是 token 的问题**（token 已通过鉴权），是官网接口不接受 `chat_session_id: null` —— 必须先在
+`POST /api/v0/chat_session/create` 建一个会话，再带真实 id 发消息。
+
+已做成 spec 的通用能力（不是 DeepSeek 专属）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `sessionURL` | 建会话接口；为 nil 表示不需要 |
+| `sessionBody` | 建会话请求体，默认 `{}` |
+| `sessionIdPath` | 从回包里取 id 的点路径，如 `data.biz_data.chat_session.id` |
+
+`WebAdapterClient.createSession()` 在发消息前跑一次，id 通过 `{{session_id}}` 注入 body 模板。
+端点存在性已验证：`/api/v0/chat_session/create`、`/api/v0/chat/create_pow_challenge`、
+`/api/v0/chat_session/fetch_page` 都返回 200 + `INVALID_TOKEN` 信封（说明路径对，不是 404）。
+
 ### 3.6 协议层自适应（用户不需要选）
 
 有的「OpenAI 兼容」网关其实挂在 `/v1/responses`（OpenAI 新接口）而不是 `/v1/chat/completions`。
@@ -199,6 +217,20 @@ Packages/DeepSeekKit/Sources/DeepSeekUI/
 
 ---
 
+## 6.5 怎么拿到用户手机上的报错（很实用）
+
+用户会把 App 里「复制报错」的内容通过通用剪贴板同步到 Mac，落盘在：
+
+```
+~/Library/Group Containers/group.com.apple.coreservices.useractivityd/shared-pasteboard/items/<UUID>/<HASH>.rtfd/TXT.rtf
+```
+
+`textutil -convert txt -stdout TXT.rtf` 就能读到原文。
+（注意：直接 `ls` 父目录会 `Operation not permitted`，但读具体 rtfd 文件是可以的。）
+App 内已经允许长按选中文本 + 「复制报错」按钮，就是为了走这条路。
+
+---
+
 ## 7. 已知坑
 
 1. **测试用 Swift Testing**（`import Testing` / `@Suite` / `@Test` / `#expect`），写 XCTest 类不会被发现，会静默不跑
@@ -225,6 +257,22 @@ Packages/DeepSeekKit/Sources/DeepSeekUI/
 - `README.md` 顶部：开源 · 仅供技术交流，MIT，与 DeepSeek/Apple 无隶属
 - App 内「设置 → 关于」：同文案 + GitHub 链接 + 版本号
 - **没有**启动弹窗或首启协议页（刻意不做，丑且无意义）
+
+---
+
+## 9.5 下一个 AI 的工作区该选哪个目录
+
+**选 `~/Library/Developer/...` 里的 DerivedData 不行，选桌面也不行。**
+
+应该把工作区（workspace / cwd）设成仓库根目录：
+
+```
+/Users/qinzihan/.gemini/antigravity/scratch/deepseek-go-ios
+```
+
+理由：`DeepSeekGo.xcodeproj`、`Packages/DeepSeekKit`、`gateway/`、`HANDOFF.md` 全在这一层；
+构建、测试、装机命令都是从这层发出的。指向上一级会找不到工程，指向 `Packages/DeepSeekKit`
+会跑不了 `xcodebuild`。
 
 ---
 

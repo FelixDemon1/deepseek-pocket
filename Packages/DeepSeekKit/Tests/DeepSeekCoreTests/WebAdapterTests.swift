@@ -150,6 +150,30 @@ struct WebAdapterTests {
         #expect(object?["stream"] as? Bool == true)
     }
 
+    @Test("建会话后的 chat_session_id 会填进请求体")
+    func sessionIDRendered() throws {
+        let client = WebAdapterClient()
+        let request = try client.makeRequest(
+            spec: .deepSeekWeb, credential: "t", model: "deepseek-chat",
+            messages: [ChatMessage(role: .user, content: "hi")],
+            sessionID: "sess-123"
+        )
+        let body = try #require(request.httpBody)
+        let object = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        #expect(object?["chat_session_id"] as? String == "sess-123")
+    }
+
+    @Test("DeepSeek 预设带建会话配置，且 id 路径可解析")
+    func deepSeekSessionBootstrapConfigured() {
+        let spec = WebAdapterSpec.deepSeekWeb
+        #expect(spec.sessionURL?.contains("chat_session/create") == true)
+        let payload: [String: Any] = [
+            "data": ["biz_data": ["chat_session": ["id": "abc"]]]
+        ]
+        let path = spec.sessionIdPath ?? ""
+        #expect(WebJSONPath.string(in: payload, path: path) == "abc")
+    }
+
     @Test("没有凭据时直接报错，不会发出请求")
     func requestRejectsEmptyCredential() {
         let client = WebAdapterClient()

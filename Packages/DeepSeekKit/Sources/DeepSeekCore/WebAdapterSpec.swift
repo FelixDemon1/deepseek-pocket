@@ -53,6 +53,12 @@ public struct WebAdapterSpec: Codable, Identifiable, Sendable, Equatable {
     /// sse_json_text / json_text 用的点路径
     public var streamPath: String
     public var models: [String]
+    /// 有些渠道必须先建会话才能发消息（DeepSeek 网页版就是：chat_session_id 不接受 null）
+    public var sessionURL: String?
+    /// 建会话用的请求体，默认 {}
+    public var sessionBody: String?
+    /// 从建会话回包里取 id 的点路径
+    public var sessionIdPath: String?
     /// 是否已用真实抓包校准
     public var calibrated: Bool
     public var notes: String
@@ -70,9 +76,15 @@ public struct WebAdapterSpec: Codable, Identifiable, Sendable, Equatable {
         responseMode: WebResponseMode,
         streamPath: String = "",
         models: [String],
+        sessionURL: String? = nil,
+        sessionBody: String? = nil,
+        sessionIdPath: String? = nil,
         calibrated: Bool = false,
         notes: String = ""
     ) {
+        self.sessionURL = sessionURL
+        self.sessionBody = sessionBody
+        self.sessionIdPath = sessionIdPath
         self.id = id
         self.name = name
         self.loginURL = loginURL
@@ -110,11 +122,14 @@ public extension WebAdapterSpec {
             "Origin": "https://chat.deepseek.com",
             "Authorization": "Bearer {{token}}"
         ],
-        bodyTemplate: #"{"chat_session_id":null,"parent_message_id":null,"model_type":null,"prompt":"{{prompt}}","ref_file_ids":[],"thinking_enabled":false,"search_enabled":false,"stream":true}"#,
+        bodyTemplate: #"{"chat_session_id":"{{session_id}}","parent_message_id":null,"prompt":"{{prompt}}","ref_file_ids":[],"thinking_enabled":false,"search_enabled":false,"stream":true}"#,
         responseMode: .sseDeepSeek,
         models: ["deepseek-chat", "deepseek-reasoner"],
+        sessionURL: "https://chat.deepseek.com/api/v0/chat_session/create",
+        sessionBody: #"{}"#,
+        sessionIdPath: "data.biz_data.chat_session.id",
         calibrated: false,
-        notes: "localStorage 的 userToken 是 JSON，取 .value；首包给 fragments，之后是 p/o/v 增量补丁。"
+        notes: "必须先建会话（chat_session_id 不接受 null，否则 HTTP 422）；首包给 fragments，之后是 p/o/v 增量补丁。"
     )
 
     static let qwenWeb = WebAdapterSpec(
