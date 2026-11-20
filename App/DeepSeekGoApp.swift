@@ -40,6 +40,59 @@ struct DeepSeekGoApp: App {
                             let resQwen = await viewModel.testWebAdapter(.qwenWeb)
                             print("[WEB-ADAPTER-VERIFY-QWEN] \(resQwen)")
                         }
+                    } else if CommandLine.arguments.contains("--verify-python") {
+                        // 自检：不经过模型，直接让工具层跑一段 Python（含画图写文件）
+                        Task {
+                            let code = "import numpy as np, matplotlib.pyplot as plt\nx = np.linspace(0, 6.28, 50)\nplt.plot(x, np.sin(x)); plt.savefig('sine.png')\nprint('mean', round(float(np.mean(np.arange(10))), 2))"
+                            let data = (try? JSONSerialization.data(withJSONObject: ["code": code])) ?? Data()
+                            let call = ToolCallRequest(id: "py", name: "run_python", argumentsJSON: String(decoding: data, as: UTF8.self))
+                            let output = await viewModel.toolset.execute(call, firewall: viewModel.firewall)
+                            print("[PYTHON-VERIFY] error=\(output.isError) ms=\(output.durationMs) files=\(output.producedFiles ?? []) | \(output.content.prefix(600))")
+                            let shell = ToolCallRequest(id: "sh", name: "run_shell", argumentsJSON: #"{"command":"python3 -c \"import sys; print(sys.version.split()[0])\""}"#)
+                            let second = await viewModel.toolset.execute(shell, firewall: viewModel.firewall)
+                            print("[PYTHON-VERIFY-2] error=\(second.isError) ms=\(second.durationMs) | \(second.content.prefix(200))")
+                        }
+                    } else if CommandLine.arguments.contains("--verify-phone") {
+                        // 自检：不经过模型，直接通过 PhoneRunner 打开「设置」再点进「通用」
+                        Task {
+                            let look = ToolCallRequest(id: "l", name: "phone_look", argumentsJSON: #"{"app":"com.apple.Preferences"}"#)
+                            let first = await viewModel.toolset.execute(look, firewall: viewModel.firewall)
+                            print("[PHONE-VERIFY] error=\(first.isError) | \(first.content.prefix(300).replacingOccurrences(of: "\n", with: "⏎"))")
+                            let target = first.content.split(separator: "\n").first { $0.hasSuffix(" 通用") }
+                            print("[PHONE-VERIFY-TARGET] \(target ?? "没找到「通用」")")
+                            let number = target?.dropFirst().prefix { $0 != "]" } ?? "0"
+                            let tap = ToolCallRequest(id: "d", name: "phone_do", argumentsJSON: "{\"actions\":[{\"type\":\"tap\",\"element\":\(number)}]}")
+                            let second = await viewModel.toolset.execute(tap, firewall: viewModel.firewall)
+                            print("[PHONE-VERIFY-2] error=\(second.isError) | \(second.content.prefix(300).replacingOccurrences(of: "\n", with: "⏎"))")
+                        }
+                    } else if CommandLine.arguments.contains("--verify-agent") {
+                        // 真机自检：用 DeepSeek 网页版跑一个真实的多步任务，把每一步打到控制台
+                        Task {
+                            if viewModel.hasWebCredential(.deepSeekWeb) {
+                                viewModel.activateWebAdapter(.deepSeekWeb)
+                            }
+                            viewModel.createNewSession()
+                            // 可以在参数后面跟一句自定义任务：--verify-agent "整理一下工作区"
+                            let arguments = CommandLine.arguments
+                            let custom = arguments.firstIndex(of: "--verify-agent")
+                                .flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil }
+                                .flatMap { $0.hasPrefix("--") ? nil : $0 }
+                            viewModel.sendOrSteer(text: custom ?? "先用 run_shell 执行 ls -la 看看工作区里有什么，再读 WELCOME.md，最后用一句话告诉我这个文件写了什么。")
+                            var announced: String?
+                            while viewModel.isStreaming {
+                                if let pending = viewModel.pendingApproval, pending.id != announced {
+                                    announced = pending.id
+                                    print("[AGENT-VERIFY-WAIT] 等你在手机上确认：\(pending.summary)")
+                                }
+                                try? await Task.sleep(for: .milliseconds(500))
+                            }
+                            for message in viewModel.activeSession?.messages ?? [] where message.role != .system {
+                                let calls = message.toolCalls.map { "\($0.name)\($0.argumentsJSON)" }.joined(separator: " ")
+                                let state = message.toolOutput.map { $0.isError ? "失败" : "成功" } ?? ""
+                                print("[AGENT-VERIFY] \(message.role.rawValue) \(state) \(calls) | \(message.content.prefix(200).replacingOccurrences(of: "\n", with: "⏎"))")
+                            }
+                            print("[AGENT-VERIFY-DONE] error=\(viewModel.errorBanner ?? "无")")
+                        }
                     } else if let pendingPrompt = QuickPromptBridge.shared.consumePendingPrompt() {
                         viewModel.sendOrSteer(text: pendingPrompt)
                     }

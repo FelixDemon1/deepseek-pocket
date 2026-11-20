@@ -8,12 +8,17 @@ public struct MessageRowView: View {
     public let isLastAssistant: Bool
     /// 正在生成且还没收到任何内容时的占位提示（如「正在连接 豆包网页版…」）
     public let liveStatus: String?
+    /// agent 轮里思考过程已经在轨迹中展示，最终回答不再重复
+    public let hideReasoning: Bool
+    /// 代替 token 用量显示的页脚（如「23 秒 · 4 步 · 3.4 万 tokens」）
+    public let footnote: String?
     public let showUnrestrictedBadge: Bool
     public let onApprove: (Bool) -> Void
     public let onOpenArtifact: (ArtifactPayload) -> Void
     public let onFork: () -> Void
     public let onRegenerate: () -> Void
     public let onShare: () -> Void
+    public var onEditUser: ((String) -> Void)?
 
     @Environment(\.colorScheme) private var scheme
     @State private var reasoningExpanded: Bool = false
@@ -25,24 +30,30 @@ public struct MessageRowView: View {
         requireFaceID: Bool,
         isLastAssistant: Bool = false,
         liveStatus: String? = nil,
+        hideReasoning: Bool = false,
+        footnote: String? = nil,
         showUnrestrictedBadge: Bool = false,
         onApprove: @escaping (Bool) -> Void,
         onOpenArtifact: @escaping (ArtifactPayload) -> Void,
         onFork: @escaping () -> Void = {},
         onRegenerate: @escaping () -> Void = {},
-        onShare: @escaping () -> Void = {}
+        onShare: @escaping () -> Void = {},
+        onEditUser: ((String) -> Void)? = nil
     ) {
         self.message = message
         self.pendingApproval = pendingApproval
         self.requireFaceID = requireFaceID
         self.isLastAssistant = isLastAssistant
         self.liveStatus = liveStatus
+        self.hideReasoning = hideReasoning
+        self.footnote = footnote
         self.showUnrestrictedBadge = showUnrestrictedBadge
         self.onApprove = onApprove
         self.onOpenArtifact = onOpenArtifact
         self.onFork = onFork
         self.onRegenerate = onRegenerate
         self.onShare = onShare
+        self.onEditUser = onEditUser
     }
 
     public var body: some View {
@@ -79,6 +90,23 @@ public struct MessageRowView: View {
                         RoundedRectangle(cornerRadius: 20, style: .continuous)
                             .fill(DeepSeekTheme.userBubble(scheme))
                     )
+                    #if os(iOS)
+                    .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    #endif
+                    .contextMenu {
+                        Button {
+                            copyText(message.content)
+                        } label: {
+                            Label("复制", systemImage: "doc.on.doc")
+                        }
+                        if let onEditUser {
+                            Button {
+                                onEditUser(message.content)
+                            } label: {
+                                Label("重新编辑", systemImage: "pencil")
+                            }
+                        }
+                    }
             }
         }
     }
@@ -89,7 +117,7 @@ public struct MessageRowView: View {
         VStack(alignment: .leading, spacing: 12) {
             if let liveStatus,
                message.content.isEmpty,
-               (message.reasoningContent ?? "").isEmpty,
+               hideReasoning || (message.reasoningContent ?? "").isEmpty,
                message.toolCalls.isEmpty {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -101,7 +129,7 @@ public struct MessageRowView: View {
                 .transition(.opacity)
             }
 
-            if let reasoning = message.reasoningContent, !reasoning.isEmpty {
+            if !hideReasoning, let reasoning = message.reasoningContent, !reasoning.isEmpty {
                 thinkingDisclosure(reasoning)
             }
 
@@ -112,7 +140,7 @@ public struct MessageRowView: View {
             if !message.toolCalls.isEmpty {
                 ForEach(message.toolCalls) { call in
                     if let pending = pendingApproval, pending.call.id == call.id {
-                        approvalCard(pending)
+                        ApprovalCardView(pending: pending, requireFaceID: requireFaceID, onApprove: onApprove)
                     }
                 }
             }
@@ -154,7 +182,10 @@ public struct MessageRowView: View {
                         .background(Capsule().fill(DeepSeekTheme.brandSoftFill(scheme)))
                     }
 
-                    if let usage = message.usage {
+                    if let footnote, !footnote.isEmpty {
+                        Text(footnote)
+                            .font(.system(size: 11))
+                    } else if let usage = message.usage {
                         Text(usageLabel(usage))
                             .font(.system(size: 11, design: .monospaced))
                     }
@@ -212,71 +243,6 @@ public struct MessageRowView: View {
                     }
             }
         }
-    }
-
-    // MARK: - Clean Monochrome Approval Card
-
-    private func approvalCard(_ pending: PendingToolApproval) -> some View {
-        let ink = DeepSeekTheme.primaryInk(scheme)
-
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "lock.shield")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(ink)
-                Text(pending.summary)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(ink)
-                Spacer()
-            }
-
-            if let diff = pending.unifiedDiff, !diff.isEmpty {
-                DiffBlockView(diff: diff)
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    onApprove(true)
-                } label: {
-                    HStack(spacing: 6) {
-                        if requireFaceID {
-                            Image(systemName: "faceid")
-                        }
-                        Text("允许")
-                    }
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(DeepSeekTheme.brandBlue))
-                    .foregroundStyle(Color.white)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    onApprove(false)
-                } label: {
-                    Text("取消")
-                        .font(.system(size: 13, weight: .medium))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 9)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(DeepSeekTheme.hairline(scheme), lineWidth: 1)
-                        )
-                        .foregroundStyle(ink)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(DeepSeekTheme.surface(scheme))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(DeepSeekTheme.hairline(scheme), lineWidth: 0.75)
-                )
-        )
     }
 
     // MARK: - Whisper-Quiet Compact Tool Row & Clean Artifact Card
@@ -371,6 +337,106 @@ public struct MessageRowView: View {
     }
 }
 
+/// 工具调用等待用户确认时的卡片：说明要做什么，附带 Diff，允许 / 取消。
+public struct ApprovalCardView: View {
+    public let pending: PendingToolApproval
+    public let requireFaceID: Bool
+    public let onApprove: (Bool) -> Void
+    public let onApproveTurn: (() -> Void)?
+    @Environment(\.colorScheme) private var scheme
+
+    public init(
+        pending: PendingToolApproval,
+        requireFaceID: Bool,
+        onApprove: @escaping (Bool) -> Void,
+        onApproveTurn: (() -> Void)? = nil
+    ) {
+        self.pending = pending
+        self.requireFaceID = requireFaceID
+        self.onApprove = onApprove
+        self.onApproveTurn = onApproveTurn
+    }
+
+    public var body: some View {
+        let ink = DeepSeekTheme.primaryInk(scheme)
+
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "lock.shield")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(ink)
+                Text(pending.summary)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(ink)
+                Spacer()
+            }
+
+            if let diff = pending.unifiedDiff, !diff.isEmpty {
+                DiffBlockView(diff: diff)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    onApprove(true)
+                } label: {
+                    HStack(spacing: 6) {
+                        if requireFaceID {
+                            Image(systemName: "faceid")
+                        }
+                        Text(pending.allowsTurnGrant ? "只允许这一步" : "允许")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(DeepSeekTheme.brandBlue))
+                    .foregroundStyle(Color.white)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    onApprove(false)
+                } label: {
+                    Text("取消")
+                        .font(.system(size: 13, weight: .medium))
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(DeepSeekTheme.hairline(scheme), lineWidth: 1)
+                        )
+                        .foregroundStyle(ink)
+                }
+                .buttonStyle(.plain)
+            }
+
+            // 真机实测：一轮手机操作要确认很多次，小字链接容易漏看，任务就卡在那里——做成和「允许」同级的按钮
+            if pending.allowsTurnGrant, let onApproveTurn {
+                Button(action: onApproveTurn) {
+                    Text("本轮都允许（后面的步骤不再问）")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(DeepSeekTheme.brandSoftFill(scheme))
+                        )
+                        .foregroundStyle(DeepSeekTheme.brandBlue)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(DeepSeekTheme.surface(scheme))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(DeepSeekTheme.hairline(scheme), lineWidth: 0.75)
+                )
+        )
+    }
+}
+
 public struct DiffBlockView: View {
     public let diff: String
     @Environment(\.colorScheme) private var scheme
@@ -414,109 +480,5 @@ public struct DiffBlockView: View {
         if line.hasPrefix("+ ") { return DeepSeekTheme.diffAdded.opacity(0.09) }
         if line.hasPrefix("- ") { return DeepSeekTheme.diffRemoved.opacity(0.09) }
         return .clear
-    }
-}
-
-public struct SegmentedMarkdownView: View {
-    public let rawText: String
-    @Environment(\.colorScheme) private var scheme
-
-    public init(rawText: String) {
-        self.rawText = rawText
-    }
-
-    private enum Segment: Identifiable {
-        case prose(id: Int, text: String)
-        case code(id: Int, lang: String, code: String)
-
-        var id: Int {
-            switch self {
-            case let .prose(id, _), let .code(id, _, _): return id
-            }
-        }
-    }
-
-    public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(parseSegments(rawText)) { seg in
-                switch seg {
-                case let .prose(_, text):
-                    if let attr = try? AttributedString(
-                        markdown: text,
-                        options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-                    ) {
-                        Text(attr)
-                            .font(.system(size: 16))
-                            .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
-                            .lineSpacing(5)
-                            .textSelection(.enabled)
-                    } else {
-                        Text(text)
-                            .font(.system(size: 16))
-                            .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
-                            .lineSpacing(5)
-                            .textSelection(.enabled)
-                    }
-                case let .code(_, lang, code):
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack {
-                            Text(lang.isEmpty ? "text" : lang)
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundStyle(DeepSeekTheme.secondaryInk(scheme))
-                            Spacer()
-                            Button {
-                                copyCode(code)
-                            } label: {
-                                Label("复制", systemImage: "doc.on.doc")
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(DeepSeekTheme.secondaryInk(scheme))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(DeepSeekTheme.hairline(scheme).opacity(0.45))
-
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            Text(code)
-                                .font(.system(size: 13, design: .monospaced))
-                                .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
-                                .padding(12)
-                                .textSelection(.enabled)
-                        }
-                    }
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(DeepSeekTheme.surface(scheme)))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(DeepSeekTheme.hairline(scheme), lineWidth: 0.75))
-                }
-            }
-        }
-    }
-
-    private func parseSegments(_ input: String) -> [Segment] {
-        let parts = input.components(separatedBy: "```")
-        var out: [Segment] = []
-        for (index, part) in parts.enumerated() {
-            if index.isMultiple(of: 2) {
-                let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    out.append(.prose(id: index, text: trimmed))
-                }
-            } else {
-                let lines = part.components(separatedBy: "\n")
-                let lang = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let body = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .newlines)
-                out.append(.code(id: index, lang: lang, code: body))
-            }
-        }
-        return out
-    }
-
-    private func copyCode(_ str: String) {
-        #if canImport(UIKit)
-        UIPasteboard.general.string = str
-        #elseif canImport(AppKit)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(str, forType: .string)
-        #endif
     }
 }

@@ -25,10 +25,23 @@ public final class AppViewModel {
     // Streaming & Steer state
     public var isStreaming: Bool = false
     public var activeStageText: String = ""
+    /// 当前这一轮从什么时候开始跑的（界面计时用）
+    public var turnStartedAt: Date?
+    /// 正在执行的工具（界面上「运行 · ls -la」那一条）
+    public var liveTool: ToolPresentation?
+    /// 手机操控驱动（PhoneRunner）是否在线
+    public var phoneRunnerOnline = false
     public var pendingApproval: PendingToolApproval?
     public var queuedSteers: [SteerDirective] = []
     public var errorBanner: String?
     public var noticeBanner: String?
+    /// 最近一轮失败的原因，显示在对话里出错的位置，带「重试」
+    public var turnFailure: TurnFailure?
+
+    public struct TurnFailure: Equatable, Sendable {
+        public var sessionId: UUID
+        public var message: String
+    }
 
     // Search & Attachments
     public var sessionSearchQuery: String = ""
@@ -247,6 +260,10 @@ public final class AppViewModel {
         self.requireFaceIDForApprovals = false
         self.engineMode = .onDeviceHarness
 
+        #if os(iOS)
+        PyodideRuntime.shared.firewall = firewall
+        AgentRuntimeHooks.shared.python = PyodideRuntime.shared
+        #endif
         loadPersistedState()
         seedWelcomeWorkspaceIfNeeded()
         if sessions.isEmpty {
@@ -264,6 +281,7 @@ public final class AppViewModel {
         Task {
             await firewall.setAllowedModelBaseURL(providerConfig.baseURL)
             await refreshAuditSnapshot()
+            await refreshPhoneRunnerStatus()
             await syncRemoteWebSpecs(silent: true)
         }
     }
@@ -410,6 +428,13 @@ public final class AppViewModel {
         let host = providerConfig.baseURL.host?.lowercased() ?? ""
         if !KeyProvider.requiresAPIKey(host: host) { return false }
         return !hasAPIKeyConfigured
+    }
+
+    /// 当前渠道能不能调用工具。靠驱动官网页面发消息的网页渠道（豆包 / 千问）只能聊天。
+    public var agentToolsAvailable: Bool {
+        guard engineMode == .onDeviceHarness else { return false }
+        guard let spec = activeWebAdapter else { return true }
+        return WebAdapterTransport.supportsTextTools(spec)
     }
 
     public var isAIConfigured: Bool {
@@ -688,6 +713,26 @@ public final class AppViewModel {
         }
     }
 
+    /// 抽屉里默认工作区的对话，按最近活动时间分组（今天 / 昨天 / 近 7 天 / 更早）。
+    public func sessionGroups(now: Date = Date()) -> [(title: String, sessions: [ChatSession])] {
+        let calendar = Calendar.current
+        var buckets: [(title: String, sessions: [ChatSession])] = [("今天", []), ("昨天", []), ("近 7 天", []), ("更早", [])]
+        for session in sessions(in: nil) {
+            let days = calendar.dateComponents(
+                [.day], from: calendar.startOfDay(for: session.updatedAt), to: calendar.startOfDay(for: now)
+            ).day ?? 0
+            buckets[days <= 0 ? 0 : days == 1 ? 1 : days < 7 ? 2 : 3].sessions.append(session)
+        }
+        return buckets.filter { !$0.sessions.isEmpty }
+    }
+
+    /// 检测手机操控驱动是否在线（设置页和每轮开始前调用）
+    public func refreshPhoneRunnerStatus() async {
+        let online = await PhoneControl.isRunnerAlive()
+        AgentRuntimeHooks.shared.phoneAvailable = online
+        phoneRunnerOnline = online
+    }
+
     public func rootURL(for project: WorkspaceProject) -> URL? {
         guard let bookmark = project.bookmark,
               let ts = WorkspaceToolset(bookmark: bookmark) else { return nil }
@@ -873,6 +918,8 @@ public final class AppViewModel {
         dropTrailingEmptyAssistant(in: streamingSessionId)
         streamingSessionId = nil
         persistSessions()
+        turnStartedAt = nil
+        liveTool = nil
         isStreaming = false
         activeStageText = ""
         pendingApproval = nil
@@ -889,7 +936,7 @@ public final class AppViewModel {
         }
     }
 
-    public func decideApproval(approved: Bool) {
+    public func decideApproval(approved: Bool, rememberForTurn: Bool = false) {
         guard let pending = pendingApproval else { return }
         Task {
             if approved && (requireFaceIDForApprovals || pending.requiresBiometrics) {
@@ -902,7 +949,7 @@ public final class AppViewModel {
                 }
             }
             pendingApproval = nil
-            await activeHarness?.resolveApproval(callId: pending.call.id, approved: approved)
+            await activeHarness?.resolveApproval(callId: pending.call.id, approved: approved, rememberForTurn: rememberForTurn)
         }
     }
 
@@ -978,31 +1025,66 @@ public final class AppViewModel {
                 AsyncThrowingStream { continuation in
                     Task {
                         let current = await advance()
-                        if current == 1 {
-                            let thoughts = [
-                                "先在本地 JavaScriptCore 沙盒核验吞吐延迟，",
-                                "再向工作区写入极简配置并生成行级 Diff 供用户确认。"
-                            ]
-                            for chunk in thoughts {
-                                try? await Task.sleep(for: .milliseconds(140))
+                        let titles = ["查看工作区", "用 Python 汇总并画图", "写入报告", "生成预览卡片"]
+                        // 前 done 步已完成；active 为 true 时下一步标记为进行中
+                        func plan(done: Int, active: Bool = true) -> ToolCallRequest {
+                            let steps = titles.enumerated().map { index, title -> [String: String] in
+                                let status = index < done ? "done" : (index == done && active ? "in_progress" : "pending")
+                                return ["title": title, "status": status]
+                            }
+                            let data = (try? JSONSerialization.data(withJSONObject: ["steps": steps])) ?? Data()
+                            return ToolCallRequest(
+                                id: "demo_plan_\(current)",
+                                name: "update_plan",
+                                argumentsJSON: String(decoding: data, as: UTF8.self)
+                            )
+                        }
+                        try? await Task.sleep(for: .milliseconds(500))
+
+                        switch current {
+                        case 1:
+                            for chunk in ["先看看工作区里有什么，", "再用 Python 汇总画图、写报告，最后出一张预览卡。"] {
+                                try? await Task.sleep(for: .milliseconds(260))
                                 continuation.yield(.reasoning(chunk))
                             }
-                            continuation.yield(.content("已准备本机基准测试与工作区配置变更，请确认以下文件写入："))
+                            continuation.yield(.content("先看一下工作区，再汇总数据、画图。"))
                             continuation.yield(.toolCalls([
+                                plan(done: 0),
+                                ToolCallRequest(id: "demo_ls", name: "run_shell", argumentsJSON: #"{"command":"ls -la"}"#)
+                            ]))
+                        case 2:
+                            continuation.yield(.toolCalls([
+                                plan(done: 1),
                                 ToolCallRequest(
-                                    id: "demo_js_1",
-                                    name: "run_javascript",
-                                    argumentsJSON: #"{"code":"const samples = [14, 16, 15, 13, 15]; const p50 = samples.sort((a,b)=>a-b)[2]; ({ runtime: 'Swift 6 Native', p50Ms: p50 })"}"#
-                                ),
-                                ToolCallRequest(
-                                    id: "demo_write_2",
-                                    name: "write_file",
-                                    argumentsJSON: #"{"path":"config/workspace.json","content":"{\n  \"mode\": \"minimal\",\n  \"zeroTelemetry\": true,\n  \"steer\": \"ready\"\n}"}"#
+                                    id: "demo_py",
+                                    name: "run_python",
+                                    argumentsJSON: String(decoding: (try? JSONSerialization.data(withJSONObject: ["code": """
+                                    import matplotlib.pyplot as plt
+                                    sales = [42, 51, 47, 63, 58, 71, 69, 80, 77, 91, 88, 104]
+                                    quarters = [sum(sales[i:i + 3]) for i in range(0, 12, 3)]
+                                    plt.figure(figsize=(6, 3.4))
+                                    plt.bar(["Q1", "Q2", "Q3", "Q4"], quarters, color="#4D6BFE")
+                                    plt.title("Quarterly sales")
+                                    plt.tight_layout()
+                                    plt.savefig("sales.png", dpi=160)
+                                    print("quarters:", quarters, "total:", sum(sales))
+                                    """])) ?? Data(), as: UTF8.self)
                                 )
                             ]))
-                        } else if current == 2 {
-                            try? await Task.sleep(for: .milliseconds(120))
-                            continuation.yield(.reasoning("配置已落盘，调用 render_artifact 输出极简离线预览。"))
+                        case 3:
+                            continuation.yield(.reasoning("数据出来了，把结论写成一份报告（写文件需要用户确认）。"))
+                            continuation.yield(.toolCalls([
+                                plan(done: 2),
+                                ToolCallRequest(
+                                    id: "demo_write",
+                                    name: "write_file",
+                                    argumentsJSON: String(decoding: (try? JSONSerialization.data(withJSONObject: [
+                                        "path": "notes/sales-report.md",
+                                        "content": "# 销售季度汇总\n\n- Q1：140\n- Q2：192\n- Q3：226\n- Q4：283\n\n全年合计 841，Q4 环比 +25%。"
+                                    ])) ?? Data(), as: UTF8.self)
+                                )
+                            ]))
+                        case 4:
                             let html = """
                             <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
                             <style>
@@ -1015,39 +1097,59 @@ public final class AppViewModel {
                               @media (prefers-color-scheme:dark){button{background:#f5f5f7;color:#0a0a0c}}
                             </style></head><body>
                             <div class="card">
-                              <div class="sub">ON-DEVICE SANDBOX BENCHMARK</div>
-                              <div class="metric">15.0 ms</div>
-                              <div class="sub">0 Bytes Outbound Telemetry · Isolated WKWebView</div>
-                              <button onclick="document.getElementById('s').innerText='Verified at ' + new Date().toLocaleTimeString()">Run Local Check</button>
+                              <div class="sub">SALES · 2026</div>
+                              <div class="metric">841</div>
+                              <div class="sub">Q1 140 · Q2 192 · Q3 226 · Q4 283</div>
+                              <button onclick="document.getElementById('s').innerText='Q4 环比 +25%，全年逐季上升'">看结论</button>
                               <div id="s" class="sub" style="margin-top:10px"></div>
                             </div></body></html>
                             """
                             let argsData = try? JSONSerialization.data(withJSONObject: [
-                                "title": "Sandbox Benchmark",
+                                "title": "销售看板",
                                 "kind": "html",
                                 "source": html
                             ])
                             continuation.yield(.toolCalls([
+                                plan(done: 3),
                                 ToolCallRequest(
-                                    id: "demo_art_3",
+                                    id: "demo_art",
                                     name: "render_artifact",
                                     argumentsJSON: String(decoding: argsData ?? Data(), as: UTF8.self)
                                 )
                             ]))
-                        } else {
-                            let summary = """
-                            验证已完成：
-                            1. **本机计算**：`JavaScriptCore` 中位延迟 `15ms`，无外部运行时开销。
-                            2. **工作区同步**：`config/workspace.json` 已写入 iOS「文件」目录。
-                            3. **离线预览**：点击上方卡片可在断网隔离沙盒内交互验证。
-                            """
+                        case 5:
+                            continuation.yield(.toolCalls([plan(done: 4, active: false)]))
+                        default:
+                            let pythonFailed = messages.contains { $0.toolOutput?.toolCallId == "demo_py" && $0.toolOutput?.isError == true }
+                            let summary = pythonFailed
+                                ? """
+                                ## 做了一部分
+                                Python 运行时没能启动（首次使用需要联网下载约 12MB），所以**图没画出来**；其余步骤已完成：
+
+                                - 报告 `notes/sales-report.md` 已写入工作区
+                                - 预览卡片已生成，点下面的卡片可以打开
+                                """
+                                : """
+                                ## 做完了
+                                全年销售 **841**，逐季上升，Q4 环比 +25%。
+
+                                | 季度 | 销售额 | 环比 |
+                                | --- | --- | --- |
+                                | Q1 | 140 | – |
+                                | Q2 | 192 | +37% |
+                                | Q3 | 226 | +18% |
+                                | Q4 | 283 | +25% |
+
+                                - 图表 `sales.png` 是手机上的 Python 画的，点下面的图可以放大
+                                - 报告写在 `notes/sales-report.md`，改动可逐行查看
+                                """
                             continuation.yield(.content(summary))
                             continuation.yield(.usage(TokenUsage(
-                                promptTokens: 1180,
-                                completionTokens: 196,
-                                reasoningTokens: 68,
-                                cacheHitTokens: 1020,
-                                cacheMissTokens: 160
+                                promptTokens: 11_800,
+                                completionTokens: 1_960,
+                                reasoningTokens: 680,
+                                cacheHitTokens: 10_200,
+                                cacheMissTokens: 1_600
                             )))
                         }
                         continuation.finish()
@@ -1062,10 +1164,10 @@ public final class AppViewModel {
 
         createNewSession()
         guard let idx = currentSessionIndex() else { return }
-        sessions[idx].title = "本机工作区与审批演示"
+        sessions[idx].title = "演示：销售汇总与画图"
         sessions[idx].messages.append(ChatMessage(
             role: .user,
-            content: "运行一次本机沙盒基准测试，写入配置文件并生成极简预览卡片。"
+            content: "汇总今年的销售数据，画一张季度柱状图，再写一份简短报告。"
         ))
 
         let demoHarness = AgentHarness(transport: DemoShowcaseTransport(), toolset: toolset, firewall: firewall)
@@ -1143,11 +1245,18 @@ public final class AppViewModel {
         streamingSessionId = sessionId
         isStreaming = true
         activeStageText = "思考中"
+        let startedAt = Date()
+        turnFailure = nil
+        errorBanner = nil
+        turnStartedAt = startedAt
+        liveTool = nil
         onLiveActivityUpdate?("思考中…", true)
 
         activeTask = Task { [weak self] in
             guard let self else { return }
             do {
+                // 手机操控驱动在线时才把 phone_* 工具交给模型
+                await self.refreshPhoneRunnerStatus()
                 _ = try await harness.runTurn(
                     history: historySnapshot,
                     config: cfg,
@@ -1162,10 +1271,18 @@ public final class AppViewModel {
                 guard self.turnGeneration == generation else { return }
                 self.streamingSessionId = nil
                 self.activeHarness = nil
+                self.turnStartedAt = nil
+                self.liveTool = nil
+                if let sIdx = self.sessions.firstIndex(where: { $0.id == sessionId }),
+                   let mIdx = self.sessions[sIdx].messages.indices.last,
+                   self.sessions[sIdx].messages[mIdx].role == .assistant {
+                    self.sessions[sIdx].messages[mIdx].turnDurationSec = Date().timeIntervalSince(startedAt)
+                }
                 self.isStreaming = false
                 self.activeStageText = ""
                 self.queuedSteers.removeAll()
                 self.celebratingTurnCompletion = true
+                Haptics.success()
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .seconds(2.8))
                     self?.celebratingTurnCompletion = false
@@ -1178,13 +1295,15 @@ public final class AppViewModel {
                 guard self.turnGeneration == generation else { return }
                 self.streamingSessionId = nil
                 self.activeHarness = nil
+                self.turnStartedAt = nil
+                self.liveTool = nil
                 self.isStreaming = false
                 self.activeStageText = ""
                 self.dropTrailingEmptyAssistant(in: sessionId)
                 self.persistSessions()
                 let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
                 if !cancelled {
-                    self.errorBanner = error.localizedDescription
+                    self.turnFailure = TurnFailure(sessionId: sessionId, message: error.localizedDescription)
                     self.lastAdapterError = error.localizedDescription
                 }
                 self.onLiveActivityUpdate?(cancelled ? "已停止" : "已暂停", false)
@@ -1211,17 +1330,21 @@ public final class AppViewModel {
         switch event {
         case let .assistantStarted(messageId):
             sessions[sIdx].messages.append(ChatMessage(id: messageId, role: .assistant, content: ""))
+            activeStageText = "思考中"
+            liveTool = nil
         case let .reasoningDelta(messageId, delta, elapsedSec):
             if let mIdx = sessions[sIdx].messages.firstIndex(where: { $0.id == messageId }) {
                 let prev = sessions[sIdx].messages[mIdx].reasoningContent ?? ""
                 sessions[sIdx].messages[mIdx].reasoningContent = prev + delta
                 sessions[sIdx].messages[mIdx].reasoningDurationSec = elapsedSec
                 activeStageText = String(format: "思考 %.1fs", elapsedSec)
+                liveTool = nil
             }
         case let .contentDelta(messageId, delta):
             if let mIdx = sessions[sIdx].messages.firstIndex(where: { $0.id == messageId }) {
                 sessions[sIdx].messages[mIdx].content += delta
                 activeStageText = "回复中"
+                liveTool = nil
             }
         case let .usageUpdated(messageId, usage):
             if let mIdx = sessions[sIdx].messages.firstIndex(where: { $0.id == messageId }) {
@@ -1230,9 +1353,10 @@ public final class AppViewModel {
         case let .assistantToolCalls(messageId, calls):
             if let mIdx = sessions[sIdx].messages.firstIndex(where: { $0.id == messageId }) {
                 sessions[sIdx].messages[mIdx].toolCalls = calls
-                let names = calls.map(\.name).joined(separator: ", ")
-                activeStageText = names
-                onLiveActivityUpdate?("运行 \(names)", true)
+                let actions = calls.filter { $0.name != "update_plan" }.map(ToolPresentation.describe)
+                liveTool = actions.first
+                activeStageText = actions.first.map { "\($0.verb) \($0.detail)" } ?? "更新计划"
+                onLiveActivityUpdate?(activeStageText, true)
             }
         case let .approvalRequired(pending):
             pendingApproval = pending
@@ -1240,6 +1364,12 @@ public final class AppViewModel {
             onLiveActivityUpdate?("待确认：\(pending.call.name)", true)
         case let .toolCompleted(toolMsg):
             sessions[sIdx].messages.append(toolMsg)
+            // 同一步里还有没跑完的工具就接着显示下一个
+            let finished = Set(sessions[sIdx].messages.compactMap { $0.toolOutput?.toolCallId })
+            let pendingCalls = sessions[sIdx].messages.last(where: { !$0.toolCalls.isEmpty })?.toolCalls ?? []
+            liveTool = pendingCalls
+                .first { !finished.contains($0.id) && $0.name != "update_plan" }
+                .map(ToolPresentation.describe)
         case let .steerConsumed(directive, injectedMessage):
             queuedSteers.removeAll { $0.id == directive.id }
             sessions[sIdx].messages.append(injectedMessage)

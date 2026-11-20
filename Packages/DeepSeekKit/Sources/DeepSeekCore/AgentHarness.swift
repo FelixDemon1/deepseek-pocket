@@ -15,9 +15,13 @@ public enum AgentEvent: Sendable {
 /// Coordinates multi-step Agent execution, Mid-Turn Steer Queue ("插话纠偏"), and Interactive Safety Approvals.
 public actor AgentHarness {
     public static let defaultSystemPrompt = """
-    你是 DeepSeek Pocket。回答保持直接、精炼、无套话。
+    你是 DeepSeek Pocket，运行在用户手机上的 agent：能动手就直接动手，不只给建议。回答保持直接、精炼、无套话。
+    - 需要多步完成的任务先用 update_plan 列 2~6 步计划，每完成一步更新状态；一句话能答的问题直接答；
+    - 查看和整理工作区用 run_shell（ls / cat / grep / find / head / wc / mkdir / mv / cp / rm，支持 | && > >>）；
     - 读写工作区文件用 read_file / edit_file / write_file；
-    - 精确计算用 run_javascript；
+    - 工具列表里有 phone_look / phone_do 时，可以直接操作手机上的其他 App：先 phone_look 看屏幕，再 phone_do 按元素编号点按、输入；
+    - 替用户在手机上办事用 create_reminder / create_calendar_event / set_clipboard / get_clipboard / open_url；
+    - 数据处理、统计、画图用 run_python（内置 numpy / pandas / matplotlib）；简单的精确计算用 run_javascript；
     - 交互视图或图表用 render_artifact (html / svg / mermaid)。
     """
 
@@ -26,6 +30,8 @@ public actor AgentHarness {
     private let firewall: PrivacyFirewall
     private var steerQueue: [SteerDirective] = []
     private var approvalWaiters: [String: CheckedContinuation<Bool, Never>] = [:]
+    /// 用户点了「本轮都允许」之后，本轮剩下的同类操作不再逐次询问
+    private var turnGrantActive = false
     private let maxSteps: Int
 
     public init(
@@ -48,7 +54,8 @@ public actor AgentHarness {
         steerQueue
     }
 
-    public func resolveApproval(callId: String, approved: Bool) {
+    public func resolveApproval(callId: String, approved: Bool, rememberForTurn: Bool = false) {
+        if approved && rememberForTurn { turnGrantActive = true }
         if let waiter = approvalWaiters.removeValue(forKey: callId) {
             waiter.resume(returning: approved)
         }
@@ -61,6 +68,7 @@ public actor AgentHarness {
         approvalPolicy: ApprovalPolicy,
         onEvent: @Sendable @escaping (AgentEvent) async -> Void
     ) async throws -> [ChatMessage] {
+        turnGrantActive = false
         var workingHistory = history
         if !workingHistory.contains(where: { $0.role == .system }) {
             workingHistory.insert(ChatMessage(role: .system, content: Self.defaultSystemPrompt), at: 0)
@@ -70,6 +78,15 @@ public actor AgentHarness {
            let sysIdx = workingHistory.firstIndex(where: { $0.role == .system }),
            !workingHistory[sysIdx].content.contains("<workspace_files>") {
             workingHistory[sysIdx].content += "\n<workspace_files>\(summary)</workspace_files>"
+        }
+
+        // 让模型知道「现在」是什么时候，否则「明天上午九点提醒我」这类任务无从算起
+        if let sysIdx = workingHistory.firstIndex(where: { $0.role == .system }),
+           !workingHistory[sysIdx].content.contains("<device_context>") {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "yyyy-MM-dd HH:mm EEEE"
+            workingHistory[sysIdx].content += "\n<device_context>现在是 \(formatter.string(from: Date()))，时区 \(TimeZone.current.identifier)</device_context>"
         }
 
         var newlyAppended: [ChatMessage] = []
@@ -178,7 +195,8 @@ public actor AgentHarness {
 
             for call in calls {
                 try Task.checkCancellation()
-                if let approval = toolset.requiresApproval(call, policy: approvalPolicy) {
+                if let approval = toolset.requiresApproval(call, policy: approvalPolicy),
+                   !(approval.allowsTurnGrant && turnGrantActive) {
                     let allowed = await requestAndWaitForApproval(approval, onEvent: onEvent)
                     try Task.checkCancellation()
                     if !allowed {

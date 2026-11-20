@@ -159,6 +159,26 @@ public struct SettingsAndRemoteSheet: View {
                     }
                 }
 
+                Section {
+                    #if os(iOS)
+                    LabeledContent("Python 运行时") {
+                        Text(PyodideRuntime.isDownloaded ? "已就绪 · 可离线" : "首次使用时下载约 12MB")
+                    }
+                    #endif
+                    LabeledContent("手机操控") {
+                        Text(vm.phoneRunnerOnline ? "驱动在线" : "驱动未启动")
+                            .foregroundStyle(vm.phoneRunnerOnline ? DeepSeekTheme.diffAdded : Color.secondary)
+                    }
+                    Button("重新检测手机操控驱动") {
+                        Task { await vm.refreshPhoneRunnerStatus() }
+                    }
+                } header: {
+                    Text("Agent 能力")
+                } footer: {
+                    Text("手机操控需要先在电脑上启动 PhoneRunner（仓库 PhoneRunner/README.md），只在它运行期间有效。")
+                }
+                .task { await vm.refreshPhoneRunnerStatus() }
+
                 Section("安全与隐私保护") {
                     Picker("AI 修改项目文件前", selection: $vm.approvalPolicy) {
                         Text("每次先让我确认（推荐）").tag(ApprovalPolicy.readOnlyAuto)

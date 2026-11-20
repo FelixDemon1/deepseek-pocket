@@ -42,6 +42,15 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>在你确认之后，替你在「提醒事项」里新建提醒。只在你让 AI 这么做时才会用到。</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>在你确认之后，替你在「日历」里添加日程。只写入，不读取你已有的日程。</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>用于复核敏感文件写入与外部联网操作，守护本机工作区与钥匙串凭据。</string>
 	<key>NSLocalNetworkUsageDescription</key>

@@ -57,16 +57,17 @@ public struct RootWorkspaceView: View {
                 geminiHeader(scheme: scheme, ink: ink, secondary: secondary)
 
                 if let banner = vm.errorBanner ?? vm.noticeBanner {
+                    let isError = vm.errorBanner != nil
                     HStack(spacing: 8) {
-                        Circle()
-                            .fill(vm.errorBanner != nil ? DeepSeekTheme.diffRemoved : DeepSeekTheme.brandBlue)
-                            .frame(width: 6, height: 6)
+                        Image(systemName: isError ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(isError ? DeepSeekTheme.diffRemoved : DeepSeekTheme.diffAdded)
                         Text(banner)
                             .font(.system(size: 13))
                             .foregroundStyle(ink)
                             .lineLimit(3)
-                        Spacer()
-                        if vm.errorBanner != nil {
+                        Spacer(minLength: 6)
+                        if isError {
                             Button("复制") {
                                 #if canImport(UIKit)
                                 UIPasteboard.general.string = banner
@@ -74,13 +75,6 @@ public struct RootWorkspaceView: View {
                             }
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(secondary)
-                            .buttonStyle(.plain)
-
-                            Button("连接设置") {
-                                activeSheet = .connectAI
-                            }
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(DeepSeekTheme.brandBlue)
                             .buttonStyle(.plain)
                         }
                         Button {
@@ -90,12 +84,29 @@ public struct RootWorkspaceView: View {
                             Image(systemName: "xmark")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(secondary)
+                                .frame(width: 24, height: 24)
                         }
                         .buttonStyle(.plain)
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 14)
                     .padding(.vertical, 9)
-                    .background(DeepSeekTheme.surface(scheme))
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(DeepSeekTheme.surface(scheme))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(DeepSeekTheme.hairline(scheme), lineWidth: 0.75)
+                            )
+                    )
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 4)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .task(id: banner) {
+                        // 普通提示几秒后自己收起；报错留着等用户看完
+                        guard !isError else { return }
+                        try? await Task.sleep(for: .seconds(3.5))
+                        if vm.noticeBanner == banner { vm.noticeBanner = nil }
+                    }
                 }
 
                 chatBody(scheme: scheme, ink: ink, secondary: secondary)
@@ -120,6 +131,8 @@ public struct RootWorkspaceView: View {
             }
         }
         .simultaneousGesture(drawerGesture)
+        .tint(DeepSeekTheme.brandBlue)
+        .animation(.snappy(duration: 0.25), value: vm.errorBanner ?? vm.noticeBanner)
         .preferredColorScheme(vm.appearance.colorScheme)
         .sheet(item: $activeSheet) { sheet in
             switch sheet {
@@ -266,72 +279,143 @@ public struct RootWorkspaceView: View {
     private func chatBody(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
         let visibleMessages = (vm.activeSession?.messages ?? []).filter { $0.role != .system }
         if visibleMessages.isEmpty {
-            VStack(spacing: 22) {
-                Spacer()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        PixelCompanionView(mood: vm.companionMood, character: .whale, scale: 2.6)
+                        Text(greeting)
+                            .font(.system(size: 28, weight: .semibold))
+                            .foregroundStyle(ink)
+                        Text("交给我去做，或者随便聊聊。")
+                            .font(.system(size: 16))
+                            .foregroundStyle(secondary)
+                    }
+                    .padding(.top, 36)
 
-                PixelCompanionView(mood: vm.companionMood, character: .whale, scale: 3.4)
-
-                if !vm.isAIConfigured {
-                    VStack(spacing: 8) {
+                    if !vm.isAIConfigured {
                         Button {
                             activeSheet = .connectAI
                         } label: {
-                            HStack(spacing: 6) {
+                            HStack(spacing: 10) {
                                 Image(systemName: "bolt.horizontal.circle.fill")
-                                    .font(.system(size: 15, weight: .semibold))
-                                Text("连接 AI，开始对话")
-                                    .font(.system(size: 15, weight: .semibold))
+                                    .font(.system(size: 22))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("先连接 AI")
+                                        .font(.system(size: 15, weight: .semibold))
+                                    Text("登录网页版免 Key，或粘贴任一厂商的 API Key")
+                                        .font(.system(size: 12))
+                                        .opacity(0.85)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
                             }
                             .foregroundStyle(Color.white)
-                            .padding(.horizontal, 22)
-                            .padding(.vertical, 12)
-                            .background(Capsule().fill(DeepSeekTheme.brandBlue))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 13)
+                            .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(DeepSeekTheme.brandBlue))
                         }
                         .buttonStyle(.plain)
-                        Text("登录网页版免 Key，或粘贴任一厂商 API Key，30 秒搞定")
-                            .font(.system(size: 12))
+                    }
+
+                    if vm.isAIConfigured && !vm.agentToolsAvailable {
+                        Label("当前渠道只能聊天。要让我动手做事（文件、Python、提醒、操作手机），请切到 DeepSeek 网页版或任一 API Key。", systemImage: "info.circle")
+                            .font(.system(size: 12.5))
                             .foregroundStyle(secondary)
                     }
-                }
 
-                HStack(spacing: 8) {
-                    quietActionPill(scheme: scheme, title: "体验演示", icon: "play") {
-                        vm.runInteractiveShowcase()
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                        ForEach(suggestions, id: \.title) { item in
+                            Button {
+                                draftText = item.prompt
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Image(systemName: item.icon)
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundStyle(DeepSeekTheme.brandBlue)
+                                    Text(item.title)
+                                        .font(.system(size: 14.5, weight: .semibold))
+                                        .foregroundStyle(ink)
+                                    Text(item.subtitle)
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(secondary)
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.leading)
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 86, alignment: .topLeading)
+                                .padding(13)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .fill(DeepSeekTheme.surface(scheme))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                                .stroke(DeepSeekTheme.hairline(scheme), lineWidth: 0.75)
+                                        )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    quietActionPill(scheme: scheme, title: "项目", icon: "folder") {
-                        activeSheet = .workspace
-                    }
-                    quietActionPill(scheme: scheme, title: "模式", icon: "sparkles") {
-                        activeSheet = .presets
+
+                    HStack(spacing: 8) {
+                        quietActionPill(scheme: scheme, title: "看演示", icon: "play") {
+                            vm.runInteractiveShowcase()
+                        }
+                        quietActionPill(scheme: scheme, title: "项目", icon: "folder") {
+                            activeSheet = .workspace
+                        }
+                        quietActionPill(scheme: scheme, title: "模式", icon: "sparkles") {
+                            activeSheet = .presets
+                        }
                     }
                 }
-
-                Spacer()
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
             }
-            .frame(maxWidth: .infinity)
+            .scrollDismissesKeyboard(.interactively)
             .contentShape(Rectangle())
             .onTapGesture { endEditing() }
         } else {
             let lastAssistantId = visibleMessages.last(where: { $0.role == .assistant })?.id
-            let liveMessageId = vm.isStreaming ? visibleMessages.last?.id : nil
+            let timeline = ChatTimelineItem.build(from: visibleMessages)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 22) {
-                        ForEach(visibleMessages) { msg in
-                            MessageRowView(
-                                message: msg,
-                                pendingApproval: vm.pendingApproval,
-                                requireFaceID: vm.requireFaceIDForApprovals,
-                                isLastAssistant: msg.id == lastAssistantId,
-                                liveStatus: msg.id == liveMessageId ? liveStatusText : nil,
-                                showUnrestrictedBadge: vm.isUnrestrictedMode,
-                                onApprove: { allowed in vm.decideApproval(approved: allowed) },
-                                onOpenArtifact: { art in vm.activeArtifact = art },
-                                onFork: { vm.forkSession(upTo: msg.id) },
-                                onRegenerate: { vm.regenerateLastTurn() },
-                                onShare: { activeSheet = .share }
-                            )
-                            .id(msg.id)
+                        ForEach(timeline) { item in
+                            switch item {
+                            case let .user(message):
+                                MessageRowView(
+                                    message: message,
+                                    pendingApproval: nil,
+                                    requireFaceID: false,
+                                    onApprove: { _ in },
+                                    onOpenArtifact: { _ in },
+                                    onEditUser: { text in draftText = text }
+                                )
+                            case let .turn(_, messages):
+                                AgentTurnView(
+                                    messages: messages,
+                                    isLive: vm.isStreaming && item.id == timeline.last?.id,
+                                    liveStatus: liveStatusText,
+                                    pendingApproval: vm.pendingApproval,
+                                    requireFaceID: vm.requireFaceIDForApprovals,
+                                    isLastTurn: messages.contains { $0.id == lastAssistantId },
+                                    showUnrestrictedBadge: vm.isUnrestrictedMode,
+                                    workspaceRoot: vm.toolset.rootURL,
+                                    onApprove: { allowed in
+                                        Haptics.tap()
+                                        vm.decideApproval(approved: allowed)
+                                    },
+                                    onApproveTurn: { vm.decideApproval(approved: true, rememberForTurn: true) },
+                                    onOpenArtifact: { art in vm.activeArtifact = art },
+                                    onFork: { messageId in vm.forkSession(upTo: messageId) },
+                                    onRegenerate: { vm.regenerateLastTurn() },
+                                    onShare: { activeSheet = .share }
+                                )
+                            }
+                        }
+                        if let failure = vm.turnFailure, failure.sessionId == vm.activeSessionId, !vm.isStreaming {
+                            turnFailureCard(failure.message, scheme: scheme, ink: ink, secondary: secondary)
                         }
                         Color.clear.frame(height: 12).id("__bottom__")
                             .onAppear {
@@ -356,6 +440,20 @@ public struct RootWorkspaceView: View {
                 .onChange(of: streamingFootprint(visibleMessages.last)) { _, _ in
                     guard followsBottom else { return }
                     proxy.scrollTo("__bottom__", anchor: .bottom)
+                }
+                .onChange(of: vm.turnFailure) { _, failure in
+                    guard failure != nil else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo("__bottom__", anchor: .bottom)
+                    }
+                }
+                .onChange(of: vm.pendingApproval?.id) { _, pendingID in
+                    // 审批卡必须出现在眼前：按钮被挡住的话整轮任务就卡在那里
+                    guard pendingID != nil else { return }
+                    followsBottom = true
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo("__bottom__", anchor: .bottom)
+                    }
                 }
                 .onChange(of: vm.activeSessionId) { _, _ in
                     followsBottom = true
@@ -389,6 +487,92 @@ public struct RootWorkspaceView: View {
                 .animation(.easeOut(duration: 0.18), value: followsBottom)
             }
         }
+    }
+
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        let part = hour < 5 ? "夜深了" : hour < 11 ? "早上好" : hour < 13 ? "中午好" : hour < 18 ? "下午好" : "晚上好"
+        return vm.displayName.isEmpty ? part : "\(part)，\(vm.displayName)"
+    }
+
+    private var suggestions: [(icon: String, title: String, subtitle: String, prompt: String)] {
+        var items: [(icon: String, title: String, subtitle: String, prompt: String)] = [
+            ("folder.badge.gearshape", "整理工作区", "看看有哪些文件，写一份索引",
+             "看看工作区里有哪些文件，按用途整理一下，并写一份索引 notes/index.md。"),
+            ("chart.bar.xaxis", "用 Python 画图", "生成数据、汇总、出图",
+             "用 Python 生成一组 12 个月的示例销售数据，按季度汇总，并画一张柱状图存成 sales.png。"),
+            ("bell.badge", "设个提醒", "写进系统的提醒事项",
+             "明天上午 9 点提醒我给妈妈打电话。")
+        ]
+        if vm.phoneRunnerOnline {
+            items.append(("hand.tap", "操作手机", "打开别的 App 帮我点",
+                          "打开「设置」，进入「通用 › 关于本机」，告诉我这台手机的系统版本。"))
+        } else {
+            items.append(("macwindow", "做个小工具", "生成可交互的预览卡片",
+                          "做一个番茄钟的交互小页面，能开始、暂停和重置。"))
+        }
+        return items
+    }
+
+    private func turnFailureCard(_ message: String, scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(DeepSeekTheme.diffRemoved)
+                Text(message)
+                    .font(.system(size: 14))
+                    .foregroundStyle(ink)
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 8) {
+                Button {
+                    Haptics.tap()
+                    vm.regenerateLastTurn()
+                } label: {
+                    Label("重试", systemImage: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(DeepSeekTheme.brandBlue))
+                }
+                Button {
+                    activeSheet = .connectAI
+                } label: {
+                    Text("连接设置")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(ink)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(Capsule().stroke(DeepSeekTheme.hairline(scheme), lineWidth: 1))
+                }
+                Button {
+                    #if canImport(UIKit)
+                    UIPasteboard.general.string = message
+                    #endif
+                    vm.noticeBanner = "已复制报错内容"
+                } label: {
+                    Text("复制")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(DeepSeekTheme.diffRemoved.opacity(scheme == .dark ? 0.14 : 0.06))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(DeepSeekTheme.diffRemoved.opacity(0.25), lineWidth: 0.75)
+                )
+        )
     }
 
     /// 流式期间正文 / 思考 / 工具卡片任何一项增长都算「有新内容」
@@ -604,107 +788,153 @@ public struct RootWorkspaceView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Google Gemini Mobile Navigation Drawer (slides in from the leading edge)
+    // MARK: - 历史抽屉：搜索 + 新对话在上，按时间分组的会话居中，账号与设置在底部
 
     private func sessionsPanel(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                // 用户资料 + 新建对话 + 快捷入口
-                VStack(spacing: 10) {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 14))
+                        .foregroundStyle(secondary)
+                    TextField("搜索对话", text: $vm.sessionSearchQuery)
+                        .font(.system(size: 15))
+                        .autocorrectionDisabled()
+                    if !vm.sessionSearchQuery.isEmpty {
+                        Button {
+                            vm.sessionSearchQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(secondary.opacity(0.6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(Capsule().fill(DeepSeekTheme.surface(scheme)))
+
+                Button {
+                    Haptics.tap()
+                    vm.createNewSession()
+                    closeSidePanel()
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(ink)
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(DeepSeekTheme.surface(scheme)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("新对话")
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+
+            List {
+                let groups = vm.sessionGroups()
+                if groups.isEmpty && vm.projects.isEmpty {
+                    Text(vm.sessionSearchQuery.isEmpty ? "还没有对话" : "没有找到相关对话")
+                        .font(.system(size: 14))
+                        .foregroundStyle(secondary)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+                ForEach(groups, id: \.title) { group in
+                    Section {
+                        sessionRows(group.sessions, scheme: scheme)
+                    } header: {
+                        sectionHeader(icon: nil, title: group.title)
+                    }
+                }
+
+                ForEach(vm.projects) { project in
+                    Section {
+                        sessionRows(vm.sessions(in: project.id), scheme: scheme)
+                        Button {
+                            vm.createNewSession(in: project.id)
+                            closeSidePanel()
+                        } label: {
+                            Label("在此项目中新建对话", systemImage: "plus")
+                                .font(.system(size: 14))
+                                .foregroundStyle(secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                    } header: {
+                        sectionHeader(icon: "folder.fill", title: project.name)
+                    }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 40)
+
+            Rectangle().fill(DeepSeekTheme.hairline(scheme)).frame(height: 0.75)
+            HStack(spacing: 10) {
+                Button {
+                    openSidePanel(.settings)
+                } label: {
                     HStack(spacing: 10) {
-                        avatarCircle(size: 38, scheme: scheme)
+                        avatarCircle(size: 36, scheme: scheme)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(vm.displayName.isEmpty ? "未设置昵称" : vm.displayName)
-                                .font(.subheadline.weight(.semibold))
+                            Text(vm.displayName.isEmpty ? "设置昵称" : vm.displayName)
+                                .font(.system(size: 15, weight: .semibold))
                                 .foregroundStyle(ink)
-                            Text("\(vm.activePreset.title) · \(vm.projectName(for: vm.activeSession?.projectId))")
-                                .font(.caption2)
+                                .lineLimit(1)
+                            Text("\(vm.headerChannelTitle) · \(vm.activePreset.title)")
+                                .font(.system(size: 11.5))
                                 .foregroundStyle(secondary)
                                 .lineLimit(1)
                         }
-                        Spacer()
+                        Spacer(minLength: 4)
                     }
-
-                    Button {
-                        vm.createNewSession()
-                        closeSidePanel()
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 14, weight: .semibold))
-                            Text("发起新对话")
-                                .font(.system(size: 15, weight: .semibold))
-                            Spacer()
-                        }
-                        .foregroundStyle(DeepSeekTheme.brandBlue)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(
-                            Capsule().fill(DeepSeekTheme.brandSoftFill(scheme))
-                        )
-                    }
-                    .buttonStyle(.plain)
-
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
+                .buttonStyle(.plain)
 
-                List {
-                    Section {
-                        sessionRows(vm.sessions(in: nil))
-                    } header: {
-                        sectionHeader(icon: "bubble.left", title: "对话")
-                    }
-
-                    ForEach(vm.projects) { project in
-                        Section {
-                            let list = vm.sessions(in: project.id)
-                            if list.isEmpty {
-                                Text("还没有对话")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            sessionRows(list)
-                            Button {
-                                vm.createNewSession(in: project.id)
-                                closeSidePanel()
-                            } label: {
-                                Label("在此项目中新建对话", systemImage: "plus")
-                                    .font(.footnote)
-                            }
-                        } header: {
-                            sectionHeader(icon: "folder.fill", title: project.name)
-                        }
-                    }
-
-                    Section {
-                        Button {
-                            dismissPanelImmediately()
-                            activeSheet = .workspace
-                        } label: {
-                            Label("管理项目…", systemImage: "folder.badge.gearshape")
-                        }
-                    }
+                Button {
+                    dismissPanelImmediately()
+                    activeSheet = .workspace
+                } label: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 16))
+                        .foregroundStyle(ink)
+                        .frame(width: 36, height: 36)
                 }
-                .searchable(text: $vm.sessionSearchQuery, prompt: "搜索对话")
+                .buttonStyle(.plain)
+                .accessibilityLabel("管理项目")
+
+                Button {
+                    openSidePanel(.settings)
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 16))
+                        .foregroundStyle(ink)
+                        .frame(width: 36, height: 36)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("设置")
             }
-            .alert("重命名对话", isPresented: Binding(
-                get: { renamingSession != nil },
-                set: { if !$0 { renamingSession = nil } }
-            )) {
-                TextField("对话标题", text: $renameDraft)
-                Button("保存") {
-                    if let session = renamingSession {
-                        vm.renameSession(session.id, to: renameDraft)
-                    }
-                    renamingSession = nil
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+        }
+        .background(DeepSeekTheme.canvas(scheme))
+        .alert("重命名对话", isPresented: Binding(
+            get: { renamingSession != nil },
+            set: { if !$0 { renamingSession = nil } }
+        )) {
+            TextField("对话标题", text: $renameDraft)
+            Button("保存") {
+                if let session = renamingSession {
+                    vm.renameSession(session.id, to: renameDraft)
                 }
-                Button("取消", role: .cancel) { renamingSession = nil }
+                renamingSession = nil
             }
-            .navigationTitle("DeepSeek Pocket")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            Button("取消", role: .cancel) { renamingSession = nil }
         }
     }
 
@@ -933,23 +1163,32 @@ public struct RootWorkspaceView: View {
     }
 
     @ViewBuilder
-    private func sessionRows(_ list: [ChatSession]) -> some View {
+    private func sessionRows(_ list: [ChatSession], scheme: ColorScheme) -> some View {
         ForEach(list) { session in
+            let active = session.id == vm.activeSessionId
             Button {
                 vm.activateSession(session.id)
                 closeSidePanel()
             } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: session.projectId == nil ? "bubble.left" : "doc.text")
-                        .font(.system(size: 13))
-                        .foregroundStyle(session.id == vm.activeSessionId ? DeepSeekTheme.brandBlue : .secondary)
+                HStack(spacing: 8) {
                     Text(session.title)
-                        .font(.subheadline.weight(session.id == vm.activeSessionId ? .semibold : .regular))
-                        .foregroundStyle(.primary)
+                        .font(.system(size: 15, weight: active ? .semibold : .regular))
+                        .foregroundStyle(DeepSeekTheme.primaryInk(scheme))
                         .lineLimit(1)
-                    Spacer()
+                    Spacer(minLength: 4)
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(active ? DeepSeekTheme.brandSoftFill(scheme) : Color.clear)
+                )
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 1, leading: 10, bottom: 1, trailing: 10))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
             .contextMenu {
                 Button {
                     renameDraft = session.title
@@ -981,12 +1220,16 @@ public struct RootWorkspaceView: View {
         }
     }
 
-    private func sectionHeader(icon: String, title: String) -> some View {
+    private func sectionHeader(icon: String?, title: String) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: icon).font(.system(size: 10, weight: .semibold))
-            Text(title)
+            if let icon {
+                Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+            }
+            Text(title).font(.system(size: 12, weight: .medium))
             Spacer()
         }
+        .foregroundStyle(.secondary)
+        .padding(.leading, 6)
     }
 
     private func drawerFeatureChip(scheme: ColorScheme, title: String, icon: String, action: @escaping () -> Void) -> some View {

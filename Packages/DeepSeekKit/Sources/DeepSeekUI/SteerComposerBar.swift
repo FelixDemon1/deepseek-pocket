@@ -68,6 +68,18 @@ public struct SteerComposerBar: View {
                 .zIndex(1)
             }
 
+            if vm.isStreaming, let startedAt = vm.turnStartedAt {
+                LiveActivityBar(
+                    tool: vm.liveTool,
+                    fallbackText: vm.activeStageText.isEmpty ? "思考中" : vm.activeStageText,
+                    startedAt: startedAt,
+                    waitingApproval: vm.pendingApproval != nil
+                )
+                .padding(.horizontal, 14)
+                .padding(.bottom, 6)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
             VStack(alignment: .leading, spacing: 8) {
                 if let ocr = vm.pendingOCRAttachment {
                     HStack(spacing: 6) {
@@ -92,7 +104,7 @@ public struct SteerComposerBar: View {
                 }
 
                 TextField(
-                    vm.isStreaming ? "中途插话补充…" : "问问 DeepSeek…",
+                    vm.isStreaming ? "可以直接插话补充…" : "发消息，或交给我去做…",
                     text: $text,
                     axis: .vertical
                 )
@@ -277,6 +289,7 @@ public struct SteerComposerBar: View {
                 }
             } else {
                 Button {
+                    Haptics.tap()
                     vm.stopGeneration()
                 } label: {
                     Image(systemName: "stop.fill")
@@ -296,6 +309,7 @@ public struct SteerComposerBar: View {
                 let msg = text
                 text = ""
                 isFocused = false
+                Haptics.tap()
                 vm.sendOrSteer(text: msg)
             } label: {
                 Image(systemName: "arrow.up")

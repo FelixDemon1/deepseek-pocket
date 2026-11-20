@@ -213,6 +213,8 @@ public struct ToolExecutionOutput: Codable, Equatable, Sendable {
     public var unifiedDiff: String?
     public var artifact: ArtifactPayload?
     public var durationMs: Int
+    /// 这次调用在工作区里新建或改动的文件（Python 脚本的产出等）
+    public var producedFiles: [String]?
 
     public init(
         toolCallId: String,
@@ -239,6 +241,8 @@ public struct PendingToolApproval: Identifiable, Equatable, Sendable {
     public var summary: String
     public var unifiedDiff: String?
     public var requiresBiometrics: Bool
+    /// 是否可以「本轮都允许」（手机操控一轮要点很多次，逐次确认太碎）
+    public var allowsTurnGrant: Bool = false
 
     public init(
         call: ToolCallRequest,
@@ -292,6 +296,8 @@ public struct ChatMessage: Codable, Equatable, Identifiable, Sendable {
     public var usage: TokenUsage?
     public var isSteerInjection: Bool
     public var createdAt: Date
+    /// 只记在一轮的最后一条助手消息上：整轮从发出到结束用了多久
+    public var turnDurationSec: Double?
 
     public init(
         id: UUID = UUID(),

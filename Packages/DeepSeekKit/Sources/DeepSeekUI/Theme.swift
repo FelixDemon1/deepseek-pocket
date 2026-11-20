@@ -1,5 +1,24 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 import DeepSeekCore
+
+/// 轻触感反馈：发送、停止、允许这类「我按到了」的时刻。
+@MainActor
+public enum Haptics {
+    public static func tap() {
+        #if canImport(UIKit) && os(iOS)
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+    }
+
+    public static func success() {
+        #if canImport(UIKit) && os(iOS)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        #endif
+    }
+}
 
 public enum AppearancePreference: String, Codable, CaseIterable, Sendable {
     case light

@@ -235,7 +235,8 @@ public struct WebAdapterClient: Sendable {
         messages: [ChatMessage],
         sessionID: String? = nil,
         cookieHeader: String? = nil,
-        powHeaderPair: (name: String, value: String)? = nil
+        powHeaderPair: (name: String, value: String)? = nil,
+        toolManual: String? = nil
     ) throws -> URLRequest {
         let token = credential.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !token.isEmpty else { throw WebAdapterError.missingCredential }
@@ -260,7 +261,7 @@ public struct WebAdapterClient: Sendable {
             || loweredModel.contains("r1")
             || loweredModel.contains("think")
             || loweredModel.contains("qwq")
-        let prompt = Self.flatten(messages)
+        let prompt = Self.flatten(messages, toolManual: toolManual)
         let escapedPrompt = WebAdapterTemplate.jsonEscape(prompt)
         let headerVars = Self.headerTemplateValues(token: token, model: model, cookieHeader: cookieHeader)
         let values: [String: String] = [
@@ -288,9 +289,11 @@ public struct WebAdapterClient: Sendable {
     /// 剥掉本机沙盒工具索引标签，避免纯对话网页接口误以为自己挂了 function calling schema。
     private static func cleanSystemPrompt(_ raw: String) -> String {
         var cleaned = raw
-        if let start = cleaned.range(of: "<workspace_files>"),
-           let end = cleaned.range(of: "</workspace_files>") {
-            cleaned.removeSubrange(start.lowerBound..<end.upperBound)
+        for tag in ["workspace_files", "device_context"] {
+            if let start = cleaned.range(of: "<\(tag)>"),
+               let end = cleaned.range(of: "</\(tag)>") {
+                cleaned.removeSubrange(start.lowerBound..<end.upperBound)
+            }
         }
         cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleaned == AgentHarness.defaultSystemPrompt.trimmingCharacters(in: .whitespacesAndNewlines) {
@@ -299,7 +302,11 @@ public struct WebAdapterClient: Sendable {
         return cleaned
     }
 
-    public static func flatten(_ messages: [ChatMessage]) -> String {
+    /// `toolManual` 非空时走 agent 形态：保留工具调用与结果，让只有一个文本框的网页接口也能多步执行。
+    public static func flatten(_ messages: [ChatMessage], toolManual: String? = nil) -> String {
+        if let toolManual {
+            return flattenForAgent(messages, toolManual: toolManual)
+        }
         let usable = messages.filter { $0.role == .user || $0.role == .assistant || $0.role == .system }
         guard let lastUser = usable.last(where: { $0.role == .user }) else {
             return usable.map(\.content).joined(separator: "\n")
@@ -322,6 +329,49 @@ public struct WebAdapterClient: Sendable {
             parts.append("[对话历史]\n\(transcript)")
         }
         parts.append("[当前问题]\n\(lastUser.content)")
+        return parts.joined(separator: "\n\n")
+    }
+
+    private static func flattenForAgent(_ messages: [ChatMessage], toolManual: String) -> String {
+        let system = messages.first(where: { $0.role == .system })?.content
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let turns = messages.filter { $0.role != .system }
+        guard let taskIndex = turns.lastIndex(where: { $0.role == .user && !$0.isSteerInjection }) else {
+            return ([system, toolManual] + turns.map(\.content)).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        }
+
+        func line(_ message: ChatMessage, resultLimit: Int) -> String {
+            switch message.role {
+            case .user:
+                return (message.isSteerInjection ? "用户补充：" : "用户：") + message.content
+            case .assistant:
+                let calls = message.toolCalls.isEmpty ? "" : ToolCallTextProtocol.render(calls: message.toolCalls)
+                return "助手：" + [message.content, calls].filter { !$0.isEmpty }.joined(separator: "\n")
+            case .tool:
+                let name = message.toolOutput?.toolName ?? "tool"
+                let state = message.toolOutput?.isError == true ? "失败" : "成功"
+                let body = message.content.count > resultLimit
+                    ? String(message.content.prefix(resultLimit)) + "\n…（结果过长已截断）"
+                    : message.content
+                return "工具结果（\(name)，\(state)）：\n\(body)"
+            case .system:
+                return ""
+            }
+        }
+
+        var parts: [String] = []
+        if !system.isEmpty { parts.append("[系统要求]\n\(system)") }
+        parts.append(toolManual)
+        let history = turns[..<taskIndex]
+        if !history.isEmpty {
+            parts.append("[对话历史]\n" + history.map { line($0, resultLimit: 600) }.joined(separator: "\n"))
+        }
+        parts.append("[当前任务]\n\(turns[taskIndex].content)")
+        let steps = turns[(taskIndex + 1)...]
+        if !steps.isEmpty {
+            parts.append("[本轮已执行的步骤]\n" + steps.map { line($0, resultLimit: 4000) }.joined(separator: "\n"))
+            parts.append("[下一步]\n根据上面的工具结果继续：还需要信息或操作就再输出 tool 代码块；任务已经完成就直接给出最终回答，不要再输出 tool 代码块。")
+        }
         return parts.joined(separator: "\n\n")
     }
 
@@ -388,7 +438,8 @@ public struct WebAdapterClient: Sendable {
         cookieHeader: String? = nil,
         model: String,
         messages: [ChatMessage],
-        firewall: PrivacyFirewall? = nil
+        firewall: PrivacyFirewall? = nil,
+        toolManual: String? = nil
     ) -> AsyncThrowingStream<StreamDelta, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -413,7 +464,8 @@ public struct WebAdapterClient: Sendable {
                         messages: messages,
                         sessionID: sessionID,
                         cookieHeader: cookieHeader,
-                        powHeaderPair: powPair
+                        powHeaderPair: powPair,
+                        toolManual: toolManual
                     )
                     if let firewall, let chatURL = request.url {
                         try await firewall.authorize(request, purpose: .modelInference, allowingModelBase: chatURL)
@@ -421,7 +473,7 @@ public struct WebAdapterClient: Sendable {
 
                     let loweredModel = model.lowercased()
                     let thinkingEnabled = loweredModel.contains("reasoner") || loweredModel.contains("r1") || loweredModel.contains("think")
-                    let flattenedPrompt = Self.flatten(messages)
+                    let flattenedPrompt = Self.flatten(messages, toolManual: toolManual)
 
                     var extractor = WebDeltaExtractor(mode: spec.responseMode, streamPath: spec.streamPath)
                     var sawAnyDelta = false
@@ -1290,14 +1342,23 @@ public struct WebAdapterTransport: ModelStreamingTransport {
         firewall: PrivacyFirewall
     ) -> AsyncThrowingStream<StreamDelta, Error> {
         let model = spec.models.contains(config.model) ? config.model : (spec.models.first ?? config.model)
-        return client.stream(
+        let usesTools = includeWorkspaceTools && Self.supportsTextTools(spec)
+        let stream = client.stream(
             spec: spec,
             credential: credential,
             cookieHeader: cookieHeader,
             model: model,
             messages: messages,
-            firewall: firewall
+            firewall: firewall,
+            toolManual: usesTools ? ToolCallTextProtocol.manual(schemas: WorkspaceToolset.toolSchemas) : nil
         )
+        return usesTools ? ToolCallTextProtocol.wrap(stream) : stream
+    }
+
+    /// 多步工具循环每一步都要发一条消息。靠驱动官网页面发消息的渠道（豆包 / 千问）连发会触发风控，
+    /// 也会在用户账号里刷出一串新对话，所以只对直连接口的渠道开放工具。
+    public static func supportsTextTools(_ spec: WebAdapterSpec) -> Bool {
+        !spec.useBrowserContext
     }
 }
 

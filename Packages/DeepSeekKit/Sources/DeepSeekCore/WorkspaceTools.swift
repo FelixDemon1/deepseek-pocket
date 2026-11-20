@@ -23,6 +23,8 @@ public enum WorkspaceSandboxError: LocalizedError, Equatable, Sendable {
 public struct WorkspaceToolset: Sendable {
     public let rootURL: URL
     public let isExternalSecurityScoped: Bool
+    /// 默认用 App 登记的运行时；单测里可以换成假的
+    public var python: (any PythonRuntime)? = AgentRuntimeHooks.shared.python
 
     private static let externalBookmarkKey = "tide_external_workspace_bookmark_v1"
 
@@ -119,6 +121,43 @@ public struct WorkspaceToolset: Sendable {
     public static var toolSchemas: [[String: Any]] {
         [
             schema(
+                name: "update_plan",
+                description: "多步任务开工前列出分步计划，之后每完成一步就带上全部步骤再调用一次更新状态；用户能实时看到进度。一句话能答的问题不要用。",
+                properties: [
+                    "steps": [
+                        "type": "array",
+                        "description": "全部步骤（2~6 步），每项形如 {\"title\": \"做什么\", \"status\": \"pending | in_progress | done\"}",
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "title": ["type": "string"],
+                                "status": ["type": "string", "enum": ["pending", "in_progress", "done"]]
+                            ],
+                            "required": ["title", "status"]
+                        ]
+                    ]
+                ],
+                required: ["steps"]
+            ),
+            schema(
+                name: "run_shell",
+                description: "在工作区内执行一行命令（内置迷你 Shell，不是完整 Linux）。可用命令：\(MiniShell.supportedCommands.joined(separator: " "))；支持管道 |、&&、;、重定向 > >>、引号与通配符。只能访问工作区内的相对路径。",
+                properties: [
+                    "command": ["type": "string", "description": "要执行的命令行，例如 ls -la 或 grep -rn TODO . | head -20"]
+                ],
+                required: ["command"]
+            ),
+            schema(
+                name: "run_python",
+                description: "用手机内置的 Python 3.13（WebAssembly 版 CPython，自带 numpy / pandas / matplotlib 等常用库）执行脚本，可读写工作区文件；适合数据处理、统计、画图（用 plt.savefig 存成 PNG，图里的文字用英文）。不能联网，不能 pip 安装内置清单以外的包。code 与 path 二选一。",
+                properties: [
+                    "code": ["type": "string", "description": "直接执行的 Python 代码"],
+                    "path": ["type": "string", "description": "工作区内的 .py 脚本相对路径"],
+                    "args": ["type": "array", "items": ["type": "string"], "description": "传给脚本的命令行参数"]
+                ],
+                required: []
+            ),
+            schema(
                 name: "list_files",
                 description: "列出本机 iOS 工作区目录中的文件与子目录。",
                 properties: [
@@ -187,11 +226,22 @@ public struct WorkspaceToolset: Sendable {
                 ],
                 required: ["url"]
             )
-        ]
+        ] + DeviceTools.schemas + (AgentRuntimeHooks.shared.phoneAvailable ? PhoneControl.schemas : [])
     }
 
     public func requiresApproval(_ call: ToolCallRequest, policy: ApprovalPolicy) -> PendingToolApproval? {
         let args = Self.parseArgs(call.argumentsJSON)
+        // 计划只是把步骤展示给用户，没有任何副作用，任何策略下都不打断
+        if call.name == "update_plan" { return nil }
+        // 手机动作会碰到沙盒外的真实数据，任何策略下都逐次确认
+        if DeviceTools.names.contains(call.name) {
+            return PendingToolApproval(call: call, summary: DeviceTools.approvalSummary(name: call.name, args: args))
+        }
+        if PhoneControl.toolNames.contains(call.name) {
+            var approval = PendingToolApproval(call: call, summary: PhoneControl.approvalSummary(name: call.name, args: args))
+            approval.allowsTurnGrant = true
+            return approval
+        }
         switch policy {
         case .askEveryTool:
             return buildApproval(for: call, args: args)
@@ -203,6 +253,11 @@ public struct WorkspaceToolset: Sendable {
         case .readOnlyAuto:
             switch call.name {
             case "write_file", "edit_file", "fetch_webpage":
+                return buildApproval(for: call, args: args)
+            case "run_shell" where MiniShell.isMutating((args["command"] as? String) ?? "")
+                || PythonCommand.request(fromShell: (args["command"] as? String) ?? "", toolset: self) != nil:
+                return buildApproval(for: call, args: args)
+            case "run_python":
                 return buildApproval(for: call, args: args)
             default:
                 return nil
@@ -236,6 +291,15 @@ public struct WorkspaceToolset: Sendable {
                 unifiedDiff: diff,
                 requiresBiometrics: false
             )
+        case "run_shell":
+            return PendingToolApproval(call: call, summary: "执行命令 $ \((args["command"] as? String) ?? "")")
+        case "run_python":
+            let path = (args["path"] as? String) ?? ""
+            return PendingToolApproval(
+                call: call,
+                summary: path.isEmpty ? "运行一段 Python 代码（可读写工作区文件）" : "运行 Python 脚本 \(path)",
+                unifiedDiff: (args["code"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            )
         case "fetch_webpage":
             let url = (args["url"] as? String) ?? ""
             return PendingToolApproval(
@@ -254,7 +318,54 @@ public struct WorkspaceToolset: Sendable {
         let args = Self.parseArgs(call.argumentsJSON)
 
         do {
+            if DeviceTools.names.contains(call.name) {
+                return ok(call, try await DeviceTools.execute(name: call.name, args: args), since: start)
+            }
+            if PhoneControl.toolNames.contains(call.name) {
+                return ok(call, try await PhoneControl.execute(name: call.name, args: args), since: start)
+            }
             switch call.name {
+            case "update_plan":
+                let steps = AgentPlan.parse(argumentsJSON: call.argumentsJSON)
+                guard !steps.isEmpty else {
+                    throw WorkspaceSandboxError.invalidArguments("steps 不能为空，每项需要 title 和 status")
+                }
+                let done = steps.filter { $0.status == .done }.count
+                let current = steps.first { $0.status == .inProgress }?.title
+                    ?? steps.first { $0.status == .pending }?.title
+                let summary = "计划已更新：\(done)/\(steps.count) 步完成"
+                    + (current.map { "，当前：\($0)" } ?? "，全部完成")
+                return ok(call, summary, since: start)
+
+            case "run_shell":
+                guard let command = args["command"] as? String,
+                      !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw WorkspaceSandboxError.invalidArguments("缺少 command")
+                }
+                if let request = PythonCommand.request(fromShell: command, toolset: self) {
+                    return try await runPython(request, call: call, since: start)
+                }
+                let result = MiniShell(toolset: self).run(command)
+                return ToolExecutionOutput(
+                    toolCallId: call.id,
+                    toolName: call.name,
+                    content: result.output.isEmpty ? "(无输出，退出码 \(result.exitCode))" : result.output,
+                    isError: result.exitCode != 0,
+                    durationMs: Self.elapsedMs(since: start)
+                )
+
+            case "run_python":
+                let code = (args["code"] as? String) ?? ""
+                let path = (args["path"] as? String) ?? ""
+                guard !code.isEmpty || !path.isEmpty else {
+                    throw WorkspaceSandboxError.invalidArguments("code 和 path 至少给一个")
+                }
+                let extra = (args["args"] as? [Any])?.map { "\($0)" } ?? []
+                let request = path.isEmpty
+                    ? PythonRunRequest(code: code, args: ["-c"] + extra, toolset: self)
+                    : PythonRunRequest(scriptPath: path, args: [path] + extra, toolset: self)
+                return try await runPython(request, call: call, since: start)
+
             case "list_files":
                 let rel = (args["path"] as? String) ?? "."
                 let dir = try resolveSafeURL(rel)
@@ -408,6 +519,38 @@ public struct WorkspaceToolset: Sendable {
                 durationMs: Self.elapsedMs(since: start)
             )
         }
+    }
+
+    private func runPython(
+        _ request: PythonRunRequest,
+        call: ToolCallRequest,
+        since start: ContinuousClock.Instant
+    ) async throws -> ToolExecutionOutput {
+        guard let python else {
+            throw WorkspaceSandboxError.targetNotFound("这台设备上没有可用的 Python 运行时")
+        }
+        if let script = request.scriptPath {
+            guard FileManager.default.fileExists(atPath: try resolveSafeURL(script).path) else {
+                throw WorkspaceSandboxError.targetNotFound("python3: \(script): 没有这个文件")
+            }
+        }
+        let result = try await python.run(request)
+        var output = result.output
+        if output.count > MiniShell.outputLimit {
+            output = String(output.prefix(MiniShell.outputLimit)) + "\n…（输出过长已截断）"
+        }
+        var produced = ToolExecutionOutput(
+            toolCallId: call.id,
+            toolName: call.name,
+            content: output.isEmpty ? "(无输出，退出码 \(result.exitCode))" : output,
+            isError: result.exitCode != 0,
+            durationMs: Self.elapsedMs(since: start)
+        )
+        if !result.writtenFiles.isEmpty {
+            produced.producedFiles = result.writtenFiles
+            produced.content += "\n[已写入工作区：\(result.writtenFiles.joined(separator: "、"))]"
+        }
+        return produced
     }
 
     /// Prevents `../` traversal and symlink escape outside `rootURL`.
