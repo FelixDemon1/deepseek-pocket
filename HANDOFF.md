@@ -1,133 +1,217 @@
 # DeepSeek Pocket · 工程交接文档（HANDOFF）
 
-> 更新：2026-11-20 · 面向后续接手的 iOS / Go 工程师与编码助手。
-> 本文档汇总当前架构、构建测试命令、云端部署结构与待优化的产品体验清单。
+> 更新：2026-11-20（第三轮）· 面向接手的 iOS / Go 工程师与编码助手。
+> 先读 §0 和 §6，再按需查其余章节。代码是事实来源，本文与代码冲突时以代码为准。
 
 ---
 
-## 0. 项目现状概览
+## 0. 现状一页纸
 
-本项目是一个基于 Swift 6 + SwiftUI 的 iOS 原生 AI 对话与本地工作区客户端（附带一个可选的 Go 语言 OpenAI 兼容网关 `gateway/`）。
+iOS 原生（Swift 6 + SwiftUI）的手机端 agent，附带一个可选的 Go 网关 `gateway/`。
+最新提交已推送到 `main`，CI 通过。
 
-- **多渠道接入**：
-  1. **内置网页会话适配层（`WebAdapter`）**：用户在 App 自身的 `WKWebView` 中登录个人账号（支持 DeepSeek 网页版、豆包网页版、通义千问国内版 `www.qianwen.com`），由客户端完成请求格式转换与 SSE 流式解析，凭据仅存于本机 Keychain。
-  2. **标准 OpenAI 兼容 API Key**：内置 DeepSeek、阿里云百炼（通义千问）、智谱 GLM、硅基流动、Groq、GitHub Models、OpenRouter、月之暗面 Kimi 等厂商目录，支持自动拉取 `/v1/models` 与自由切换模型。
-  3. **自建云端网关（`https://app.apifish.me`）**：部署于 Azure Ubuntu 服务器，提供配置同步（`/specs.json`）与带配额限流的 OpenAI 兼容转发服务（`/v1/*`）。
-- **核心功能**：三档提示词预设（日常默认 / 工程代码 / 精简直出）、项目文件夹挂载（DocumentPicker 安全书签）、离线图片 OCR、代码/HTML 沙盒预览卡片、实时网络请求审计面板。
+**能做什么**
+
+| 能力 | 状态 |
+| --- | --- |
+| 三种接入：网页版登录（DeepSeek / 豆包 / 千问）、各厂商 API Key、自建网关 | 可用 |
+| 多步工具循环（计划 → 执行 → 汇报），带审批与中途插话 | 可用；DeepSeek 网页版和 API Key 通道有工具，**豆包 / 千问只能聊天** |
+| 工作区命令行 `run_shell`、文件读写、`run_javascript`、预览卡片 | 可用 |
+| Python（`run_python`，numpy / pandas / matplotlib） | 可用，真机已验证 |
+| 手机动作：提醒事项、日历、剪贴板、打开链接 | 代码与单测完成，**真机未验证** |
+| 手机操控：读屏、点按、输入、开 App（`phone_look` / `phone_do`） | 需要从 Mac 启动驱动；模拟器全流程通过，**真机只验证到读屏和滑动** |
+| 自建网关 `https://app.apifish.me` | 在线，但**上游密钥无效**，聊天请求全部失败（见 §6） |
+
+**第一次接手建议先做**：跑一遍 §1 的测试 → 在模拟器里 `--demo` 看一轮完整流程 → 读 §6 的未完成项。
 
 ---
 
-## 1. 构建 · 测试 · 真机安装 · 云端检查
+## 1. 构建 · 测试 · 安装
 
-工作区目录必须设为仓库根目录：`/Users/qinzihan/.gemini/antigravity/scratch/deepseek-go-ios`
+工作目录必须是仓库根目录。
 
 ```bash
-cd /Users/qinzihan/.gemini/antigravity/scratch/deepseek-go-ios
+# 单元测试
+cd Packages/DeepSeekKit && swift test        # 期望：75 tests in 5 suites passed
+cd ../../gateway && go test ./... && cd ..
 
-# 1) Swift 核心包单元测试（使用 Swift Testing 框架）
-cd Packages/DeepSeekKit && swift test          # 期望：46 tests in 4 suites passed
-cd ../..
-
-# 2) Go 网关单元测试
-cd gateway && go test ./... && cd ..
-
-# 3) 编译并签名 iOS 真机包
+# 真机包（把团队和 bundle id 换成自己的）
 xcodebuild -project DeepSeekGo.xcodeproj -scheme DeepSeekGo \
   -destination 'generic/platform=iOS' -configuration Debug \
   DEVELOPMENT_TEAM=42A7TP5GH8 PRODUCT_BUNDLE_IDENTIFIER=io.deepseekgo.felix \
   -allowProvisioningUpdates build
-
-# 4) 安装到已连接的 iPhone 17 Pro Max 并启动
 xcrun devicectl device install app --device 1AB8EF63-A612-5FE7-B105-10BC42A5AC4E \
-  ~/Library/Developer/Xcode/DerivedData/DeepSeekGo-flfjjdyajaymgnguekyszjwwmzqb/Build/Products/Debug-iphoneos/DeepSeekGo.app
+  ~/Library/Developer/Xcode/DerivedData/DeepSeekGo-*/Build/Products/Debug-iphoneos/DeepSeekGo.app
 xcrun devicectl device process launch --device 1AB8EF63-A612-5FE7-B105-10BC42A5AC4E \
   --terminate-existing io.deepseekgo.felix
 
-# 5) 云端健康检查（Azure: <user>@<server-ip>）
+# 模拟器包（bundle id 是 io.deepseekgo.ios）
+xcodebuild -project DeepSeekGo.xcodeproj -scheme DeepSeekGo \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' -configuration Debug build
+
+# 手机操控驱动（详见 PhoneRunner/README.md；命令运行期间有效）
+xcodebuild test -project PhoneRunner/PhoneRunner.xcodeproj -scheme PhoneRunner \
+  -destination 'id=<xcodebuild 里的设备 id>' \
+  DEVELOPMENT_TEAM=42A7TP5GH8 PRODUCT_BUNDLE_IDENTIFIER=io.deepseekgo.felix.phonerunner \
+  -allowProvisioningUpdates
+
+# 云端
 curl -sS https://app.apifish.me/healthz
-curl -sS https://app.apifish.me/specs.json | head -n 20
 ```
 
-- **连接设备**：iPhone 17 Pro Max（iOS 26.3.0，UDID `1AB8EF63-A612-5FE7-B105-10BC42A5AC4E`）
-- **签名说明**：`42A7TP5GH8` 为个人开发者团队，设备锁屏时 `launch` 会提示 `Locked`，解锁屏幕后重试即可。
+- 设备锁屏时 `launch` 会报 `Locked`，解锁后重试。
+- 真机上第一次启动 PhoneRunner 可能报 `Timed out while enabling automation mode`，再跑一次即可。
+- `xcodebuild` 用的设备 id（`-showdestinations` 可查）和 `devicectl` 用的 UDID 不是同一个。
+
+### 自检启动参数（都会把结果打到控制台）
+
+| 参数 | 作用 |
+| --- | --- |
+| `--demo` | 不需要模型的演示：计划 → 命令 → Python 画图 → 写文件（要确认）→ 预览卡片 |
+| `--verify-web` | 依次给 DeepSeek / 豆包 / 千问网页版发一句话 |
+| `--verify-python` | 直接让工具层跑一段 numpy + matplotlib |
+| `--verify-phone` | 通过 PhoneRunner 打开「设置」读屏并尝试点「通用」 |
+| `--verify-agent ["任务"]` | 用 DeepSeek 网页版跑一个真实任务并打印每一步；等用户确认时会打印 `[AGENT-VERIFY-WAIT]` |
+
+真机取控制台：`xcrun devicectl device process launch --console ... io.deepseekgo.felix --verify-python`。
+模拟器取控制台：`xcrun simctl launch --console-pty <sim> io.deepseekgo.ios --verify-python`。
 
 ---
 
-## 2. 目录结构地图
+## 2. 目录地图
 
 ```text
-Packages/DeepSeekKit/Sources/DeepSeekCore/
-  Models.swift                数据模型（ProviderConfig / ChatSession / PromptPreset / WorkspaceProject）
-  DeepSeekClient.swift        OpenAI chat/completions 流式客户端与 SSE 解析器
-  ResponsesClient.swift       OpenAI responses 协议客户端与协议自动探测
-  AgentHarness.swift          多步本地工作区工具循环、用户确认门与中途补充指令（Steer）
-  WorkspaceTools.swift        应用沙盒与用户授权目录内的文件读写、Diff 与 JavaScriptCore 计算
-  PurgeProfile.swift          精简直出预设与工程模式系统提示词
-  KeyProviderCatalogue.swift  各厂商 API 地址、默认模型与候选模型列表
-  WebAdapterSpec.swift        网页会话适配规格定义、模板渲染与 JSON 点路径工具
-  WebAdapterClient.swift      网页会话流式客户端、SSE 增量转换器与哈希计算工具
-  CredentialVault.swift       本机 Keychain 凭据存取（WhenUnlockedThisDeviceOnly）
-  PrivacyFirewall.swift       出站域名白名单校验与本地联网审计记录
-  SetupLink.swift             deepseekgo://setup 一键配置深链解析
+Packages/DeepSeekKit/Sources/DeepSeekCore/     不依赖 UIKit / WebKit，可在 macOS 上单测
+  Models.swift                数据模型
+  AgentHarness.swift          多步工具循环、审批门（含「本轮都允许」）、中途插话、取消
+  WorkspaceTools.swift        工具清单（schema）、审批规则、执行分发
+  MiniShell.swift             run_shell：工作区内的迷你 Shell（Swift 实现，不是 Linux）
+  ToolCallTextProtocol.swift  文本式工具调用：让只有文本框的网页接口也能调工具
+  AgentRuntimes.swift         Python 运行时协议、运行时登记处、python3 / pip 命令行解析
+  DeviceTools.swift           手机动作：提醒事项 / 日历 / 剪贴板 / 打开链接
+  PhoneControl.swift          手机操控客户端（连 PhoneRunner）
+  AgentPresentation.swift     工具 → 一行人话、计划解析、一轮执行的轨迹模型（AgentTurn）
+  MarkdownBlocks.swift        Markdown 块级解析
+  DeepSeekClient.swift / ResponsesClient.swift   OpenAI 兼容两种协议的流式客户端
+  WebAdapterSpec.swift / WebAdapterClient.swift  网页版渠道规格、请求翻译、SSE 解析、DeepSeek PoW
+  PrivacyFirewall.swift       出站白名单与联网审计
+  CredentialVault.swift / SetupLink.swift / KeyProviderCatalogue.swift / PurgeProfile.swift
 
 Packages/DeepSeekKit/Sources/DeepSeekUI/
-  AppViewModel.swift               全局状态管理、会话持久化与通道分发
-  RootWorkspaceView.swift          主界面、侧边抽屉、顶部模型切换半屏与通知横幅
-  ConnectAISheet.swift             「连接 AI」配置面板（网页登录 / API Key / 自定义网关）
-  WebAdapterLoginSheet.swift       内置 WKWebView 登录视图与同源流式请求执行器
-  SteerComposerBar.swift           底部输入栏、附件导入、深度思考开关与预设菜单
-  MessageRowView.swift             消息流渲染、思考折叠块、代码块复制与工具卡片
-  SecurityAndWorkspaceSheets.swift 项目目录管理、预设编辑与网络审计面板
-  SettingsAndShareSheets.swift     个人资料、外观设置与对话长图分享
+  AppViewModel.swift               全局状态、会话持久化、回合生命周期
+  RootWorkspaceView.swift          主界面：顶栏、首页、消息列表、抽屉、模型选择
+  AgentTurnView.swift              一轮执行的轨迹：计划卡、步骤行、终端块、交付卡、实时状态条
+  MessageRowView.swift             用户气泡、助手正文与操作栏、审批卡、Diff
+  MarkdownView.swift               Markdown 渲染
+  PyodideRuntime.swift             Python 运行时（隐藏 WKWebView + Pyodide）
+  WebAdapterLoginSheet.swift       网页登录 + 隐藏 WebView 流式执行器（豆包 / 千问）
+  SteerComposerBar.swift / ConnectAISheet.swift / SettingsAndShareSheets.swift / SecurityAndWorkspaceSheets.swift
 
-gateway/
-  main.go / gateway.go / upstream.go / store.go  轻量 Go 语言 OpenAI 兼容转发与配额限流网关
+PhoneRunner/     独立 Xcode 工程：XCUITest 手机操控驱动（主工程和 CI 不依赖它）
+gateway/         Go 网关
+App/             App 入口、Info.plist、深链与自检参数
 ```
 
-> **范围说明**：`SandboxLift.swift`、`SandboxLiftProbe.swift`、`DeviceFilesystem.swift`、`DeviceFilesSheet.swift` 为早期遗留的未启用实验文件，因个人团队无 App Group 权限处于闲置状态，日常功能开发与代码审查**无需修改或涉及这几个文件**。
+`SandboxLift*.swift`、`DeviceFilesystem.swift`、`DeviceFilesSheet.swift` 是早期遗留的未启用实验文件，不用碰。
 
 ---
 
-## 3. 核心实现要点（维护时请保持兼容）
+## 3. 必须保持的实现要点
 
-1. **`URLSession.AsyncBytes.lines` 空行行为**：
-   - Apple Foundation 的 `AsyncLineSequence` 会自动跳过空行（`\n\n`）。在 `WebAdapterClient.swift` 处理包含 `event: ready`、`event: update_session`、`event: title` 的 SSE 流时，每消费完紧随其后的一条 `data:` 行后必须立即将 `currentEvent` 重置为 `"message"`，否则后续不带 `event:` 行的正文帧会被误跳过。
-2. **有状态增量帧与多格式 SSE 转换（`WebDeltaExtractor`）**：
-   - `sse_deepseek`：首帧提供 `fragments` 快照，后续连续帧可能省略 `"p"` 字段仅发送 `{"v":"..."}`，解析器需记忆上一条路径并按 `fragment.type`（`THINK` / `RESPONSE`）区分推理过程与正文。
-   - `sse_doubao`：同时兼容 `patch_op` 内容块与内嵌 JSON 字符串的 `message.content`；请求体模板中内嵌 JSON 字符串需使用双层转义占位符 `{{prompt_nested}}`，防止多行换行符 `\n` 破坏内层 JSON 语法。
-   - `sse_qianwen`：兼容 `contents` 首帧快照与后续 RFC6902 `patch`（`op: "add" | "replace"`）增量追加。
-     2026-11-20 实测千问前端 4.15.4：对话接口已迁到 `chat2.qianwen.com/api/v2/chat`（旧 `chat2-api.qianwen.com` 对该路径返回 404，且直发需页面内签名，会 403 `EX015 签名错误`）；正文改在 `data.messages[]` 里 `mime_type: "multi_load/iframe"` 的 `content` 累计快照中。短时间连发会触发阿里风控 `ret: ["FAIL_SYS_USER_VALIDATE","RGV587_ERROR::…"]`（跳 punish 滑块页），`errorEnvelope` 已转成人话，不要尝试绕过。
-3. **`WebKitBrowserStreamPerformer` 生命周期（iOS 端）**：
-   - 对于启用 `useBrowserContext` 的渠道，首次加载页面需等待 `document.readyState === 'complete'` 及输入组件就绪后再触发请求；React 18 受控 `<textarea>` 更新值时需同步触发节点上的 `onChange` 回调以保证状态同步。
-4. **跨平台编译约束**：
-   - `DeepSeekKit` 同时支持 macOS 14（用于快速运行 `swift test`）与 iOS 17+。任何 `UIKit` 或 iOS 专属 `WebKit` API 必须包裹在 `#if canImport(UIKit)` 或 `#if os(iOS)` 条件编译块中。
-   - 中文字符串内避免混用未转义的英文双引号。
-   - 未经用户明确要求，不要自动执行 `git commit` 或 `git push`。
+### 3.1 网页版通道（改之前先跑 `--verify-web`）
+
+1. `URLSession.AsyncBytes.lines` 会吞掉空行。`WebAdapterClient` 每消费一条 `data:` 行就把 `currentEvent` 重置为 `"message"`，否则后面不带 `event:` 的正文帧会被跳过。
+2. `WebDeltaExtractor` 是有状态的：
+   - `sse_deepseek`：首帧 `fragments` 快照，后续帧可能省略 `p` 只给 `{"v":"…"}`，按 fragment 类型区分思考与正文。
+   - `sse_doubao`：兼容 `patch_op` 与内嵌 JSON 字符串；请求体里内嵌 JSON 用 `{{prompt_nested}}`（双层转义）。
+   - `sse_qianwen`：千问前端 4.15.4 起接口是 `chat2.qianwen.com/api/v2/chat`，正文在 `data.messages[]` 里 `mime_type: "multi_load/iframe"` 的 `content` 累计快照中；同时兼容旧的 `contents` + JSON Patch。
+3. DeepSeek 网页版需要先建会话，再解 `DeepSeekHashV1` 工作量证明（23 轮 Keccak，跳过第一个轮常量）。有逐位对拍的单测，别改算法。
+4. 豆包 / 千问靠隐藏 WKWebView 驱动官网页面发送（`WebKitBrowserStreamPerformer`）：等页面就绪后留 1.6 秒让签名脚本初始化；用 React 的 `onChange` 写入受控输入框；同一渠道的请求串行；首包 45 秒 / 空闲 90 秒看门狗；网页进程被回收后自动重建。
+5. 千问短时间连发会触发阿里风控（`FAIL_SYS_USER_VALIDATE` / `RGV587`，跳滑块页）。已翻译成人话，不要尝试绕过。
+
+### 3.2 工具与审批
+
+1. **工具从哪来**：`WorkspaceToolset.toolSchemas` 是唯一清单。API Key 通道走原生 function calling；DeepSeek 网页版走 `ToolCallTextProtocol`（模型输出 ` ```tool ` 代码块，本机截留解析）。`WebAdapterTransport.supportsTextTools` 决定哪些网页渠道开放工具——凡是 `useBrowserContext` 的都不开放，因为多步循环会连开新对话并触发风控。
+2. **审批规则**（`requiresApproval`）：
+   - `update_plan` 永不询问。
+   - 手机动作（`DeviceTools`）和手机操控（`PhoneControl`）在任何策略下都询问；手机操控可以「本轮都允许」。
+   - 标准防护下：写文件、改文件、会改动工作区的 `run_shell`、`run_python`、联网抓取要询问。
+   - `MiniShell.isMutating` 解析不了的命令一律按「会改动」处理。
+3. **停止**：`AgentHarness` 在流结束后显式检查取消；等待审批的 continuation 可取消。`AppViewModel` 用 `turnGeneration` 丢弃旧回合的迟到事件。相关单测在 `LifecycleHardeningTests`。
+4. **Python**（`PyodideRuntime`）：页面走自定义协议 `pyrt://`，所有资源由 `PyodideSchemeHandler` 提供——先读 `Caches/pyodide-0.29.5/`，没有再经 `PrivacyFirewall` 从 jsDelivr 下载并缓存。页面 CSP 只允许 `pyrt:`，Python 代码不能自己联网。每次运行前把工作区同步进内存文件系统，运行后把新增 / 改动的文件写回。超时 120 秒或取消时直接销毁 WebView。
+5. **手机操控**：每次调用的流程是「切到目标 App → 执行 → 读屏 → 切回本 App」，所以不需要后台保活，确认卡也始终能在本 App 里点到。`phone_*` 工具只在驱动在线时才出现在工具清单里（`AgentRuntimeHooks.phoneAvailable`，每轮开始前探测）。
+
+### 3.3 工程约束
+
+- `DeepSeekKit` 同时给 macOS 编译（跑 `swift test`）。UIKit / iOS 专属 API 必须包在 `#if canImport(UIKit)` 或 `#if os(iOS)` 里。
+- 测试用 Swift Testing（`@Suite` / `@Test` / `#expect`），写 XCTest 类不会被发现。
+- 中文字符串里不要直接写英文双引号。往 Swift 源码里嵌 JSON 时，带中文的内容用 `JSONSerialization` 生成，不要用 `#"…"#` 手写（会编译失败）。
+- 未经用户明确要求不要 `git commit` / `git push`。
+- **仓库是公开的**：不要把服务器地址、登录名、密钥写进任何会提交的文件。
+- 参考过的 dsh-Go 和 Poki 都是 AGPL-3.0，本仓库是 MIT：只借鉴交互思路，不要复制它们的代码。
 
 ---
 
-## 4. 云端服务结构（`https://app.apifish.me`）
+## 4. 云端（`https://app.apifish.me`）
 
-服务器：`<user>@<server-ip>`（Docker + Caddy 自动 HTTPS）
+服务器：`<user>@<server-ip>`（Docker + Caddy 自动 HTTPS；登录信息在本地，不入库）。
 
-- `~/caddy/`：Caddy 容器配置，静态托管 `/specs.json`（供客户端同步最新渠道配置），其余路径反向代理至 `dsg-gateway:8787`。
-- `~/gateway/`：Go 网关容器 `dsg-gateway`，配置文件位于 `~/gateway/config.json`，支持按 IP 每日免费额度限制、RPM 限流与管理端邀请链接生成。
+- `~/caddy/`：Caddy 配置；`site/specs.json` 是客户端热更新的渠道规格（按 id 覆盖内置预设，客户端会校验并缓存）。
+- `~/gateway/`：Go 网关容器 `dsg-gateway`，配置在 `~/gateway/config.json`。
+- 部署方式：把 `gateway/*.go` 同步到 `~/gateway/`，在那里 `docker compose up -d --build`。服务器上没有 Go，测试用 `docker run --rm -v ~/gateway:/src -w /src golang:1.24-alpine go test ./...`。
+- 网关与本仓库 `gateway/` 当前一致（上一轮已部署）。
 
 ---
 
-## 5. 下一阶段全栈质量审查与优化清单
+## 5. 验证记录（2026-11-20）
 
-请在保持现有 46 项 Swift 单元测试与 Go 网关测试全部通过的前提下，对前后端与 UI/UX 进行全面体验审查与细节优化：
+| 项目 | 怎么验的 | 结果 |
+| --- | --- | --- |
+| Swift 单测 | `swift test` | 75 项通过 |
+| Go 网关 | `go test ./...` | 通过 |
+| CI | GitHub Actions | 通过（测试 + 未签名 IPA） |
+| 三个网页渠道 | 真机 `--verify-web` | 上一轮全部「连接成功」；本轮没有重跑 |
+| DeepSeek 网页版多步任务 | 真机 `--verify-agent` | 两个任务跑通（命令行 → 读文件 → 写文件 → 汇报） |
+| Python | 真机 `--verify-python` | 通过，画图 2.6 秒 |
+| 手机操控驱动 | 模拟器：打开设置 → 点进通用 → 回到本 App | 通过 |
+| 手机操控驱动 | 真机：启动驱动、读「设置」屏幕、滑动 | 通过 |
+| 模型驱动的手机操控 | 真机 `--verify-agent` | **没跑完**：模型正确发起了读屏、滑动、点按，但三次都停在等待用户确认，超时结束 |
+| 界面 | 模拟器截图（浅色 + 深色）：首页、抽屉、演示全流程、设置 | 看过；真机上没有逐屏看 |
+| 手机动作（提醒 / 日历 / 剪贴板 / 打开链接） | 仅单测（参数校验、审批规则） | **真机未验证**，系统授权弹窗也没见过 |
+| API Key 通道下的新工具 | – | **未验证**（没有可用的 Key） |
 
-1. **客户端健壮性与异常处理**：
-   - 为 `WebKitBrowserStreamPerformer` 增加流式超时看门狗（如超时无响应自动结束流并重置对应 `WKWebView`）以及 `webViewWebContentProcessDidTerminate` 进程回收后的自动恢复。
-   - 检查 `syncRemoteWebSpecs()` 拉取的云端配置在本地的缓存持久化与字段合法性校验，保证离线冷启动也能使用最近一次同步的有效配置。
-   - 检查 Swift 6 严格并发模型下的 `@MainActor`、Actor 隔离与任务取消（点击停止生成按钮时底层网络任务与 WebView 流的及时清理）。
-2. **UI / UX 细节打磨**：
-   - **模型列表搜索与自定义输入**：当网关返回较多模型（如 OpenRouter / 硅基流动）时，在顶部模型选择半屏中支持关键字过滤与手动输入自定义模型 ID。
-   - **流式阅读体验**：优化长文本流式输出时的自动滚动逻辑（用户手动上滑阅读历史内容时不强制拉回底部，提供「回到底部」浮动按钮）。
-   - **会话管理体验**：完善侧边抽屉中历史会话的重命名、空会话清理、长代码块横向滚动体验，以及深浅色模式在所有弹窗中的配色一致性。
-   - **新用户引导**：优化未配置任何渠道时的首屏空状态提示，让新用户一步直达「连接 AI」。
-3. **Go 网关（`gateway/`）与客户端联动**：
-   - 完善客户端对网关 `402`（免费额度用尽）与 `429`（请求过快）状态码的友好提示文案。
-   - 审查 `gateway/` 的并发读写锁、连接超时回收、日志脱敏与单元测试覆盖率。
+---
+
+## 6. 未完成与已知问题（按建议的处理顺序）
+
+1. **网关上游密钥无效**。`~/gateway/config.json` 里的 DeepSeek key 被上游以 401 拒绝，经网关的聊天请求全部失败。需要人填入真实 key 后在 `~/gateway` 执行 `docker compose up -d`。
+2. **真机上把模型驱动的手机操控跑完一次**。启动 PhoneRunner，发「打开设置，进入通用 › 关于本机，告诉我系统版本」，在确认卡上点「本轮都允许」。上一轮为此把这个按钮从小字链接改成了醒目的按钮，改完后还没在真机上验证。
+3. **真机验证手机动作**：让它建一条提醒和一个日程，确认授权弹窗、写入结果和失败提示。
+4. **用户手机上的审批设置是「沙盒全自动」**（写文件、跑脚本不询问）。这是用户确认过要保留的，不要擅自改回。
+5. **手机操控的边界**：
+   - 需要 Mac 启动驱动，脱离电脑独立运行没有做。
+   - 驱动的本机接口没有鉴权（运行期间本机其他 App 也能调用）。
+   - 只读得到无障碍树，没有截图 / OCR，纯图片界面读不到。
+   - 只跟踪由它自己打开的 App。
+6. **Python 的边界**：不是 Linux；只有 Pyodide 自带的包（没有 openpyxl，装不了 PyPI 上的包）；不能联网；matplotlib 没有中文字体；运行期间的输出要等结束后才显示。
+7. **豆包 / 千问没有工具**。要开放需要先解决「每一步都新开官网对话」的问题（复用同一个官网会话）。
+8. **界面还没做的**：
+   - 「连接 AI」和设置页仍是系统默认表单样式，和新首页、抽屉的风格不统一。
+   - 流式输出没有打字光标；代码块没有语法高亮。
+   - Markdown 每来一个分片就整段重新解析，长回答可能有性能问题，没有测量过。
+   - iPad / 横屏布局没有适配。
+9. **演示（`--demo`）依赖 Python 运行时**，首次需要联网下载约 12MB；失败时演示会如实说明图没画出来。
+10. 低优先级：`/healthz` 暴露用户数和上游地址；发送前的凭据检查每次重绘都读 Keychain；重新登录网页渠道后旧 cookie 可能残留。
+
+---
+
+## 7. 本地辅助脚本（不在仓库里）
+
+上一轮在 `/Users/qinzihan/AI_huancun/agent-refs/` 留下了几个脚本和参考资料，接手时可以直接用：
+
+- `runner.sh`：在模拟器上启动 PhoneRunner 并等它上线。
+- `ui.py`：通过 PhoneRunner 驱动模拟器里的 App（`look` / `tap <文字>` / `do <动作 JSON>` / `shot <名字>` / `sheet` 拼图）。用它可以真正点自己的界面做回归。
+- `simrun.sh` / `devrun.sh`：带自检参数启动模拟器 / 真机上的 App 并等待标记输出。
+- `shots/`：各轮截图；`dsh-Go/`、`poki/`：两个参考项目的只读克隆（AGPL，仅供看交互）。
+
+这个目录约 1GB，不需要时可以整个删除。
