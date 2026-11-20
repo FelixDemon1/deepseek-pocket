@@ -23,6 +23,12 @@ jobs:
           cd Packages/DeepSeekKit
           swift test
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: gateway/go.mod
+          cache-dependency-path: gateway/go.mod
+
       - name: Run Self-Hosted Go Gateway Unit Tests
         run: |
           cd gateway
