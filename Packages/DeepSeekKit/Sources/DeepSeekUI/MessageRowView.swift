@@ -6,6 +6,9 @@ public struct MessageRowView: View {
     public let pendingApproval: PendingToolApproval?
     public let requireFaceID: Bool
     public let isLastAssistant: Bool
+    /// 正在生成且还没收到任何内容时的占位提示（如「正在连接 豆包网页版…」）
+    public let liveStatus: String?
+    public let showUnrestrictedBadge: Bool
     public let onApprove: (Bool) -> Void
     public let onOpenArtifact: (ArtifactPayload) -> Void
     public let onFork: () -> Void
@@ -21,6 +24,8 @@ public struct MessageRowView: View {
         pendingApproval: PendingToolApproval?,
         requireFaceID: Bool,
         isLastAssistant: Bool = false,
+        liveStatus: String? = nil,
+        showUnrestrictedBadge: Bool = false,
         onApprove: @escaping (Bool) -> Void,
         onOpenArtifact: @escaping (ArtifactPayload) -> Void,
         onFork: @escaping () -> Void = {},
@@ -31,6 +36,8 @@ public struct MessageRowView: View {
         self.pendingApproval = pendingApproval
         self.requireFaceID = requireFaceID
         self.isLastAssistant = isLastAssistant
+        self.liveStatus = liveStatus
+        self.showUnrestrictedBadge = showUnrestrictedBadge
         self.onApprove = onApprove
         self.onOpenArtifact = onOpenArtifact
         self.onFork = onFork
@@ -80,6 +87,20 @@ public struct MessageRowView: View {
 
     private var assistantSection: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let liveStatus,
+               message.content.isEmpty,
+               (message.reasoningContent ?? "").isEmpty,
+               message.toolCalls.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(liveStatus)
+                        .font(.system(size: 14))
+                        .foregroundStyle(DeepSeekTheme.secondaryInk(scheme))
+                }
+                .padding(.vertical, 4)
+                .transition(.opacity)
+            }
+
             if let reasoning = message.reasoningContent, !reasoning.isEmpty {
                 thinkingDisclosure(reasoning)
             }
@@ -119,6 +140,19 @@ public struct MessageRowView: View {
                     }
 
                     Spacer()
+
+                    if showUnrestrictedBadge {
+                        HStack(spacing: 3) {
+                            Image(systemName: "bolt.shield")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text("无限制")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundStyle(DeepSeekTheme.brandBlue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(DeepSeekTheme.brandSoftFill(scheme)))
+                    }
 
                     if let usage = message.usage {
                         Text(usageLabel(usage))

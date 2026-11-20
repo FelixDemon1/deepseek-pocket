@@ -152,6 +152,8 @@ public actor AgentHarness {
             if calls.first?.id == "__interrupt__" {
                 continue
             }
+            // 停止生成时 AsyncThrowingStream 会「正常结束」而不是抛错；这里显式检查，避免把半截回复当成完成
+            try Task.checkCancellation()
 
             let assistantMsg = ChatMessage(
                 id: assistantId,
@@ -178,6 +180,7 @@ public actor AgentHarness {
                 try Task.checkCancellation()
                 if let approval = toolset.requiresApproval(call, policy: approvalPolicy) {
                     let allowed = await requestAndWaitForApproval(approval, onEvent: onEvent)
+                    try Task.checkCancellation()
                     if !allowed {
                         let rejectedOutput = ToolExecutionOutput(
                             toolCallId: call.id,
@@ -209,11 +212,21 @@ public actor AgentHarness {
         _ approval: PendingToolApproval,
         onEvent: @Sendable @escaping (AgentEvent) async -> Void
     ) async -> Bool {
-        await withCheckedContinuation { continuation in
-            approvalWaiters[approval.call.id] = continuation
-            Task {
-                await onEvent(.approvalRequired(approval))
+        let callId = approval.call.id
+        // 用户点「停止」时必须把挂起的审批 continuation 释放掉，否则整个回合任务与 harness 永久泄漏
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                    return
+                }
+                approvalWaiters[callId] = continuation
+                Task {
+                    await onEvent(.approvalRequired(approval))
+                }
             }
+        } onCancel: {
+            Task { await self.resolveApproval(callId: callId, approved: false) }
         }
     }
 

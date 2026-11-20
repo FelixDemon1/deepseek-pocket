@@ -29,6 +29,27 @@ public enum DeepSeekClientError: LocalizedError, Equatable, Sendable {
         case let .invalidEndpoint(url):
             return "无效的模型接口地址：\(url)"
         case let .httpError(code, message):
+            return Self.friendlyHTTPMessage(statusCode: code, message: message)
+        }
+    }
+
+    /// 把网关 / 厂商常见状态码翻译成能直接照做的人话（402 额度用尽、429 太快、401 Key 失效、5xx 服务端故障）。
+    static func friendlyHTTPMessage(statusCode code: Int, message: String) -> String {
+        let detail = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = detail.isEmpty ? "" : "（\(detail)）"
+        let quotaLike = detail.contains("额度") || detail.lowercased().contains("quota") || detail.lowercased().contains("budget")
+        switch code {
+        case 402:
+            return "免费额度已用完\(suffix)。可以明天再来，或在「连接 AI」换成自己的 API Key / 网页版登录。"
+        case 429 where quotaLike:
+            return "今日额度暂时耗尽\(suffix)。稍后再试，或在「连接 AI」换成自己的 API Key / 网页版登录。"
+        case 429:
+            return "请求太快了\(suffix)，等几十秒再发。"
+        case 401, 403:
+            return "API Key 无效或已过期（HTTP \(code)）\(suffix)。到「连接 AI」重新粘贴 Key。"
+        case 500...599:
+            return "模型服务暂时不可用（HTTP \(code)）\(suffix)，稍后重试。"
+        default:
             return "模型接口返回 HTTP \(code)：\(message)"
         }
     }
@@ -67,8 +88,7 @@ public struct DeepSeekClient: ModelStreamingTransport {
                     let body = Self.buildRequestPayload(config: config, messages: messages, tools: schemas)
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-                    await firewall.setAllowedModelBaseURL(config.baseURL)
-                    try await firewall.authorize(request, purpose: .modelInference)
+                    try await firewall.authorize(request, purpose: .modelInference, allowingModelBase: config.baseURL)
 
                     let startedAt = ContinuousClock.now
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -157,8 +177,7 @@ public struct DeepSeekClient: ModelStreamingTransport {
             req.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
         }
 
-        await firewall.setAllowedModelBaseURL(baseURL)
-        try await firewall.authorize(req, purpose: .modelInference)
+        try await firewall.authorize(req, purpose: .modelInference, allowingModelBase: baseURL)
 
         let started = ContinuousClock.now
         let (data, resp) = try await URLSession.shared.data(for: req)
@@ -195,8 +214,7 @@ public struct DeepSeekClient: ModelStreamingTransport {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
 
-        await firewall.setAllowedModelBaseURL(url)
-        try await firewall.authorize(req, purpose: .modelInference)
+        try await firewall.authorize(req, purpose: .modelInference, allowingModelBase: url)
 
         let started = ContinuousClock.now
         let (data, resp) = try await URLSession.shared.data(for: req)
@@ -288,7 +306,7 @@ public struct DeepSeekClient: ModelStreamingTransport {
         return payload
     }
 
-    private static func extractAPIErrorMessage(_ raw: String) -> String {
+    static func extractAPIErrorMessage(_ raw: String) -> String {
         if let data = raw.data(using: .utf8),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let err = obj["error"] as? [String: Any],

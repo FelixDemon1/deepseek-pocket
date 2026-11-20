@@ -30,6 +30,11 @@ public struct RootWorkspaceView: View {
     @State private var dragAnchorX: CGFloat = 0
     @State private var isDraggingDrawer = false
     @State private var isDraggingScrim = false
+    /// 是否跟随最新输出自动滚到底；用户手动上滑阅读时为 false，并出现「回到底部」按钮
+    @State private var followsBottom = true
+    @State private var modelQuery: String = ""
+    @State private var renamingSession: ChatSession?
+    @State private var renameDraft: String = ""
 
     public init(vm: AppViewModel) {
         self.vm = vm
@@ -59,8 +64,25 @@ public struct RootWorkspaceView: View {
                         Text(banner)
                             .font(.system(size: 13))
                             .foregroundStyle(ink)
-                            .lineLimit(2)
+                            .lineLimit(3)
                         Spacer()
+                        if vm.errorBanner != nil {
+                            Button("复制") {
+                                #if canImport(UIKit)
+                                UIPasteboard.general.string = banner
+                                #endif
+                            }
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(secondary)
+                            .buttonStyle(.plain)
+
+                            Button("连接设置") {
+                                activeSheet = .connectAI
+                            }
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(DeepSeekTheme.brandBlue)
+                            .buttonStyle(.plain)
+                        }
                         Button {
                             vm.errorBanner = nil
                             vm.noticeBanner = nil
@@ -103,7 +125,7 @@ public struct RootWorkspaceView: View {
             switch sheet {
             case .modelPicker:
                 geminiModelHalfSheet(scheme: scheme, ink: ink, secondary: secondary)
-                    .presentationDetents([.height(370)])
+                    .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             case .connectAI:
                 ConnectAISheet(vm: vm)
@@ -119,7 +141,7 @@ public struct RootWorkspaceView: View {
                 }
             }
         }
-        .onChange(of: activeSheet) { _ in endEditing() }
+        .onChange(of: activeSheet) { _, _ in endEditing() }
         .sheet(isPresented: $vm.purgeIntroPresented) {
             PurgeIntroSheet { sample in
                 draftText = sample
@@ -142,7 +164,7 @@ public struct RootWorkspaceView: View {
                 vm.requestedSheetName = nil
             }
         }
-        .onChange(of: vm.requestedSheetName) { name in
+        .onChange(of: vm.requestedSheetName) { _, name in
             guard let name else { return }
             switch name {
             case "models": activeSheet = .modelPicker
@@ -181,10 +203,10 @@ public struct RootWorkspaceView: View {
 
             // Center: Gemini-style Model Switcher Pill -> opens bottom half-sheet
             Button {
-                activeSheet = .modelPicker
+                activeSheet = vm.isAIConfigured ? .modelPicker : .connectAI
             } label: {
                 HStack(spacing: 5) {
-                    Text("DeepSeek")
+                    Text(vm.headerChannelTitle)
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(ink)
                     Text(vm.shortModelTitle)
@@ -226,7 +248,7 @@ public struct RootWorkspaceView: View {
                         avatarCircle(size: 34, scheme: scheme)
 
                         Circle()
-                            .fill(vm.hasAPIKeyConfigured ? DeepSeekTheme.diffAdded : Color.orange)
+                            .fill(vm.isAIConfigured ? DeepSeekTheme.diffAdded : Color.orange)
                             .frame(width: 8, height: 8)
                             .overlay(Circle().stroke(DeepSeekTheme.canvas(scheme), lineWidth: 1.5))
                     }
@@ -249,6 +271,29 @@ public struct RootWorkspaceView: View {
 
                 PixelCompanionView(mood: vm.companionMood, character: .whale, scale: 3.4)
 
+                if !vm.isAIConfigured {
+                    VStack(spacing: 8) {
+                        Button {
+                            activeSheet = .connectAI
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "bolt.horizontal.circle.fill")
+                                    .font(.system(size: 15, weight: .semibold))
+                                Text("连接 AI，开始对话")
+                                    .font(.system(size: 15, weight: .semibold))
+                            }
+                            .foregroundStyle(Color.white)
+                            .padding(.horizontal, 22)
+                            .padding(.vertical, 12)
+                            .background(Capsule().fill(DeepSeekTheme.brandBlue))
+                        }
+                        .buttonStyle(.plain)
+                        Text("登录网页版免 Key，或粘贴任一厂商 API Key，30 秒搞定")
+                            .font(.system(size: 12))
+                            .foregroundStyle(secondary)
+                    }
+                }
+
                 HStack(spacing: 8) {
                     quietActionPill(scheme: scheme, title: "体验演示", icon: "play") {
                         vm.runInteractiveShowcase()
@@ -268,6 +313,7 @@ public struct RootWorkspaceView: View {
             .onTapGesture { endEditing() }
         } else {
             let lastAssistantId = visibleMessages.last(where: { $0.role == .assistant })?.id
+            let liveMessageId = vm.isStreaming ? visibleMessages.last?.id : nil
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 22) {
@@ -277,6 +323,8 @@ public struct RootWorkspaceView: View {
                                 pendingApproval: vm.pendingApproval,
                                 requireFaceID: vm.requireFaceIDForApprovals,
                                 isLastAssistant: msg.id == lastAssistantId,
+                                liveStatus: msg.id == liveMessageId ? liveStatusText : nil,
+                                showUnrestrictedBadge: vm.isUnrestrictedMode,
                                 onApprove: { allowed in vm.decideApproval(approved: allowed) },
                                 onOpenArtifact: { art in vm.activeArtifact = art },
                                 onFork: { vm.forkSession(upTo: msg.id) },
@@ -286,22 +334,74 @@ public struct RootWorkspaceView: View {
                             .id(msg.id)
                         }
                         Color.clear.frame(height: 12).id("__bottom__")
+                            .onAppear {
+                                // iOS 17 兜底：滑回底部即恢复跟随（iOS 18+ 由滚动阶段精确判定）
+                                if #available(iOS 18.0, macOS 15.0, *) {} else { followsBottom = true }
+                            }
                     }
                     .padding(.horizontal, 18)
                     .padding(.top, 12)
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .simultaneousGesture(TapGesture().onEnded { endEditing() })
+                .modifier(BottomFollowTracker(follows: $followsBottom))
                 .onChange(of: visibleMessages.count) { _, _ in
+                    // 自己刚发出的消息总是拉回底部并恢复跟随；其余情况尊重用户的阅读位置
+                    if visibleMessages.last?.role == .user { followsBottom = true }
+                    guard followsBottom else { return }
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo("__bottom__", anchor: .bottom)
                     }
                 }
-                .onChange(of: visibleMessages.last?.content) { _, _ in
+                .onChange(of: streamingFootprint(visibleMessages.last)) { _, _ in
+                    guard followsBottom else { return }
                     proxy.scrollTo("__bottom__", anchor: .bottom)
                 }
+                .onChange(of: vm.activeSessionId) { _, _ in
+                    followsBottom = true
+                    proxy.scrollTo("__bottom__", anchor: .bottom)
+                }
+                .overlay(alignment: .bottom) {
+                    if !followsBottom {
+                        Button {
+                            followsBottom = true
+                            withAnimation(.easeOut(duration: 0.25)) {
+                                proxy.scrollTo("__bottom__", anchor: .bottom)
+                            }
+                        } label: {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(ink)
+                                .frame(width: 36, height: 36)
+                                .background(
+                                    Circle()
+                                        .fill(DeepSeekTheme.surface(scheme))
+                                        .overlay(Circle().stroke(DeepSeekTheme.hairline(scheme), lineWidth: 0.75))
+                                        .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("回到底部")
+                        .padding(.bottom, 10)
+                        .transition(.opacity.combined(with: .scale(scale: 0.85)))
+                    }
+                }
+                .animation(.easeOut(duration: 0.18), value: followsBottom)
             }
         }
+    }
+
+    /// 流式期间正文 / 思考 / 工具卡片任何一项增长都算「有新内容」
+    private func streamingFootprint(_ message: ChatMessage?) -> Int {
+        guard let message else { return 0 }
+        return message.content.utf8.count &+ (message.reasoningContent?.utf8.count ?? 0) &* 31 &+ message.toolCalls.count &* 7919
+    }
+
+    private var liveStatusText: String {
+        if vm.activeStageText == "思考中", let spec = vm.activeWebAdapter {
+            return "正在连接 \(spec.name)…"
+        }
+        return vm.activeStageText.isEmpty ? "思考中…" : "\(vm.activeStageText)…"
     }
 
     private func quietActionPill(scheme: ColorScheme, title: String, icon: String, action: @escaping () -> Void) -> some View {
@@ -327,65 +427,150 @@ public struct RootWorkspaceView: View {
     // MARK: - Google Gemini Mobile Bottom Half-Sheet Model Switcher
 
     private func geminiModelHalfSheet(scheme: ColorScheme, ink: Color, secondary: Color) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        let channelDesc = vm.activeWebAdapter?.name ?? vm.providerConfig.friendlyEndpointLabel
+        let allModels = vm.availableModelsForActiveChannel
+        let query = modelQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let models = query.isEmpty ? allModels : allModels.filter {
+            $0.localizedCaseInsensitiveContains(query) || Self.friendlyModelTitle($0).localizedCaseInsensitiveContains(query)
+        }
+        // 网页版渠道的模型是固定映射，不接受自定义 ID
+        let allowsCustomID = vm.activeWebAdapter == nil
+        let canUseCustom = allowsCustomID && !query.isEmpty && !query.contains(" ") && !allModels.contains(query)
+
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("选择对话模型")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(ink)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("选择模型")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(ink)
+                    Text("当前渠道：\(channelDesc)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(secondary)
+                        .lineLimit(1)
+                }
                 Spacer()
-                Button("接口设置") {
-                    openSidePanel(.settings)
+                if vm.activeWebAdapter == nil && vm.hasAPIKeyConfigured {
+                    Button {
+                        Task { await vm.discoverGatewayModels() }
+                    } label: {
+                        if vm.isFetchingModelsOrBalance {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("刷新列表")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(secondary)
+                        }
+                    }
+                    .padding(.trailing, 6)
+                }
+                Button("更换渠道") {
+                    activeSheet = .connectAI
                 }
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(DeepSeekTheme.brandBlue)
             }
             .padding(.top, 18)
 
-            VStack(spacing: 8) {
-                geminiModelOptionRow(
-                    scheme: scheme,
-                    title: "DeepSeek R1 · 深度思考",
-                    subtitle: "适合写代码、复杂推理与多步任务（官方 API）",
-                    selected: vm.providerConfig.model == "deepseek-reasoner" && vm.providerConfig.baseURL.host == "api.deepseek.com"
-                ) {
-                    var next = vm.providerConfig
-                    next.baseURL = URL(string: "https://api.deepseek.com/v1")!
-                    next.model = "deepseek-reasoner"
-                    vm.updateProviderConfig(next)
-                    activeSheet = nil
+            if allowsCustomID || allModels.count > 6 {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 13))
+                        .foregroundStyle(secondary)
+                    TextField(allowsCustomID ? "搜索，或直接输入模型 ID" : "搜索模型", text: $modelQuery)
+                        .font(.system(size: 14))
+                        .autocorrectionDisabled()
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
+                        .submitLabel(.done)
+                        .onSubmit {
+                            if canUseCustom { selectModel(query) }
+                        }
+                    if !modelQuery.isEmpty {
+                        Button {
+                            modelQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(secondary.opacity(0.6))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-
-                geminiModelOptionRow(
-                    scheme: scheme,
-                    title: "DeepSeek V3 · 快速回答",
-                    subtitle: "日常对话响应更快（官方 API）",
-                    selected: vm.providerConfig.model == "deepseek-chat" && vm.providerConfig.baseURL.host == "api.deepseek.com"
-                ) {
-                    var next = vm.providerConfig
-                    next.baseURL = URL(string: "https://api.deepseek.com/v1")!
-                    next.model = "deepseek-chat"
-                    vm.updateProviderConfig(next)
-                    activeSheet = nil
-                }
-
-                geminiModelOptionRow(
-                    scheme: scheme,
-                    title: "免费体验通道 (OpenRouter R1)",
-                    subtitle: "无需充值即可免费使用 R1 推理模型",
-                    selected: vm.providerConfig.baseURL.host?.contains("openrouter.ai") == true
-                ) {
-                    var next = vm.providerConfig
-                    next.baseURL = URL(string: "https://openrouter.ai/api/v1")!
-                    next.model = "deepseek/deepseek-r1:free"
-                    vm.updateProviderConfig(next)
-                    activeSheet = nil
-                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(DeepSeekTheme.surface(scheme)))
             }
 
-            Spacer()
+            ScrollView {
+                VStack(spacing: 8) {
+                    if canUseCustom {
+                        geminiModelOptionRow(
+                            scheme: scheme,
+                            title: "使用自定义模型「\(query)」",
+                            subtitle: "列表里没有也能用：按渠道文档填写完整模型 ID",
+                            selected: false
+                        ) {
+                            selectModel(query)
+                        }
+                    }
+                    if models.isEmpty && !canUseCustom {
+                        Text("没有匹配「\(query)」的模型")
+                            .font(.system(size: 13))
+                            .foregroundStyle(secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 18)
+                    }
+                    ForEach(models, id: \.self) { modelID in
+                        geminiModelOptionRow(
+                            scheme: scheme,
+                            title: Self.friendlyModelTitle(modelID),
+                            subtitle: modelID,
+                            selected: vm.providerConfig.model == modelID
+                        ) {
+                            selectModel(modelID)
+                        }
+                    }
+
+                    geminiModelOptionRow(
+                        scheme: scheme,
+                        title: "连接或切换其他 AI 渠道…",
+                        subtitle: "免 Key 网页版（DeepSeek / 豆包 / 千问）· 各大厂商 API Key · 云端网关",
+                        selected: false
+                    ) {
+                        activeSheet = .connectAI
+                    }
+                }
+                .padding(.bottom, 16)
+            }
         }
         .padding(.horizontal, 20)
         .background(DeepSeekTheme.canvas(scheme).ignoresSafeArea())
+        .onAppear { modelQuery = "" }
+    }
+
+    private func selectModel(_ modelID: String) {
+        var next = vm.providerConfig
+        next.model = modelID
+        vm.updateProviderConfig(next)
+        modelQuery = ""
+        activeSheet = nil
+    }
+
+    private static func friendlyModelTitle(_ modelID: String) -> String {
+        switch modelID {
+        case "deepseek-chat": return "DeepSeek V3 · 快速回答"
+        case "deepseek-reasoner": return "DeepSeek R1 · 深度思考"
+        case "doubao-seed-1.6": return "豆包 Seed 1.6 · 快速回答"
+        case "doubao-seed-1.6-thinking": return "豆包 Seed 1.6 · 深度思考"
+        case "qwen3-max", "qwen-max": return "Qwen Max · 旗舰主力"
+        case "qwen-plus": return "Qwen Plus · 均衡高速"
+        case "qwen-turbo": return "Qwen Turbo · 极速轻量"
+        case "qwq-32b", "qwq-plus": return "QwQ · 深度推理模型"
+        case "glm-4-flash": return "GLM-4-Flash · 免费极速"
+        case "glm-z1-flash": return "GLM-Z1-Flash · 免费深度推理"
+        default: return modelID
+        }
     }
 
     private func geminiModelOptionRow(
@@ -502,6 +687,19 @@ public struct RootWorkspaceView: View {
                     }
                 }
                 .searchable(text: $vm.sessionSearchQuery, prompt: "搜索对话")
+            }
+            .alert("重命名对话", isPresented: Binding(
+                get: { renamingSession != nil },
+                set: { if !$0 { renamingSession = nil } }
+            )) {
+                TextField("对话标题", text: $renameDraft)
+                Button("保存") {
+                    if let session = renamingSession {
+                        vm.renameSession(session.id, to: renameDraft)
+                    }
+                    renamingSession = nil
+                }
+                Button("取消", role: .cancel) { renamingSession = nil }
             }
             .navigationTitle("DeepSeek Pocket")
             #if os(iOS)
@@ -752,6 +950,31 @@ public struct RootWorkspaceView: View {
                     Spacer()
                 }
             }
+            .contextMenu {
+                Button {
+                    renameDraft = session.title
+                    renamingSession = session
+                } label: {
+                    Label("重命名", systemImage: "pencil")
+                }
+                if !vm.projects.isEmpty || session.projectId != nil {
+                    Menu {
+                        if session.projectId != nil {
+                            Button("默认工作区") { vm.moveSession(session.id, to: nil) }
+                        }
+                        ForEach(vm.projects.filter { $0.id != session.projectId }) { project in
+                            Button(project.name) { vm.moveSession(session.id, to: project.id) }
+                        }
+                    } label: {
+                        Label("移到项目", systemImage: "folder")
+                    }
+                }
+                Button(role: .destructive) {
+                    vm.deleteSession(session.id)
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+            }
         }
         .onDelete { offsets in
             for idx in offsets { vm.deleteSession(list[idx].id) }
@@ -785,5 +1008,33 @@ public struct RootWorkspaceView: View {
             )
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// 判定用户是否在手动上翻阅读：iOS 18+ 用滚动阶段精确判定（手指按住即暂停跟随，松手后按是否贴底恢复）；
+/// iOS 17 用下拉手势兜底，滑回底部时由底部锚点的 onAppear 恢复。
+private struct BottomFollowTracker: ViewModifier {
+    @Binding var follows: Bool
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            content.onScrollPhaseChange { _, phase, context in
+                switch phase {
+                case .interacting:
+                    follows = false
+                case .idle:
+                    let geometry = context.geometry
+                    follows = geometry.visibleRect.maxY >= geometry.contentSize.height - 80
+                default:
+                    break
+                }
+            }
+        } else {
+            content.simultaneousGesture(
+                DragGesture(minimumDistance: 12).onChanged { value in
+                    if value.translation.height > 12 { follows = false }
+                }
+            )
+        }
     }
 }

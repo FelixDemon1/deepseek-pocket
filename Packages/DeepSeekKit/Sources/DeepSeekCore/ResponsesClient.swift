@@ -74,8 +74,7 @@ public struct ResponsesClient: ModelStreamingTransport {
             ? ["model": "probe", "input": "ping", "max_output_tokens": 1]
             : ["model": "probe", "messages": [["role": "user", "content": "ping"]], "max_tokens": 1]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        await firewall.setAllowedModelBaseURL(url)
-        guard (try? await firewall.authorize(request, purpose: .modelInference)) != nil else { return false }
+        guard (try? await firewall.authorize(request, purpose: .modelInference, allowingModelBase: url)) != nil else { return false }
         guard let (_, response) = try? await session.data(for: request),
               let http = response as? HTTPURLResponse else { return false }
         // 400/422 说明路由是存在的，只是参数不对；404/405 才是「没这个接口」
@@ -150,8 +149,7 @@ public struct ResponsesClient: ModelStreamingTransport {
 
                     request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-                    await firewall.setAllowedModelBaseURL(config.baseURL)
-                    try await firewall.authorize(request, purpose: .modelInference)
+                    try await firewall.authorize(request, purpose: .modelInference, allowingModelBase: config.baseURL)
 
                     let (bytes, response) = try await session.bytes(for: request)
                     guard let http = response as? HTTPURLResponse else {
@@ -163,7 +161,10 @@ public struct ResponsesClient: ModelStreamingTransport {
                             body += line
                             if body.count > 800 { break }
                         }
-                        throw DeepSeekClientError.httpError(statusCode: http.statusCode, message: body)
+                        throw DeepSeekClientError.httpError(
+                            statusCode: http.statusCode,
+                            message: DeepSeekClient.extractAPIErrorMessage(body)
+                        )
                     }
 
                     var toolCalls: [ToolCallRequest] = []

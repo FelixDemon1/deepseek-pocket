@@ -173,7 +173,7 @@ func (s *Store) DeleteCredential(userKey string) bool {
 // ---------- linking endpoints ----------
 
 func (g *Gateway) handleAccountStatus(w http.ResponseWriter, r *http.Request) {
-	ident, herr := g.resolve(r)
+	ident, herr := g.peek(r)
 	if herr != nil {
 		writeAPIError(w, herr.status, herr.kind, herr.msg)
 		return

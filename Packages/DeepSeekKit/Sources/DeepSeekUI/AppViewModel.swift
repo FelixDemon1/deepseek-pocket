@@ -66,16 +66,35 @@ public final class AppViewModel {
         "webadapter.\(spec.id)"
     }
 
+    public func webCookieAccount(_ spec: WebAdapterSpec) -> String {
+        "webadapter.cookies.\(spec.id)"
+    }
+
     public func hasWebCredential(_ spec: WebAdapterSpec) -> Bool {
         ((try? vault.loadSecret(for: webCredentialAccount(spec))) ?? nil)?.isEmpty == false
     }
 
-    public func saveWebCredential(_ token: String, for spec: WebAdapterSpec) {
+    public func saveWebCredential(_ token: String, cookieHeader: String? = nil, for spec: WebAdapterSpec) {
         do {
             try vault.saveSecret(token, for: webCredentialAccount(spec))
+            if let cookieHeader = cookieHeader?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !cookieHeader.isEmpty {
+                try vault.saveSecret(cookieHeader, for: webCookieAccount(spec))
+            }
+            errorBanner = nil
+            lastAdapterError = nil
             activateWebAdapter(spec)
         } catch {
             errorBanner = error.localizedDescription
+        }
+    }
+
+    public func clearWebCredential(for spec: WebAdapterSpec) {
+        try? vault.deleteSecret(for: webCredentialAccount(spec))
+        try? vault.deleteSecret(for: webCookieAccount(spec))
+        if activeWebAdapterID == spec.id {
+            activeWebAdapterID = nil
+            persistSettings()
         }
     }
 
@@ -140,13 +159,24 @@ public final class AppViewModel {
         guard let token = (try? vault.loadSecret(for: webCredentialAccount(spec))) ?? nil, !token.isEmpty else {
             return "还没登录这个渠道"
         }
+        let cookies = (try? vault.loadSecret(for: webCookieAccount(spec))) ?? nil
+        #if os(iOS)
+        let performer: BrowserStreamPerformer? = WebKitBrowserStreamPerformer.shared
+        #else
+        let performer: BrowserStreamPerformer? = nil
+        #endif
         var collected = ""
         do {
-            let stream = WebAdapterClient().stream(
+            let stream = WebAdapterClient(browserPerformer: performer).stream(
                 spec: spec,
                 credential: token,
+                cookieHeader: cookies,
                 model: spec.models.first ?? "",
-                messages: [ChatMessage(role: .user, content: "回复两个字：收到")]
+                messages: [
+                    ChatMessage(role: .system, content: "直接回答，不要废话。\n只输出要求的内容。"),
+                    ChatMessage(role: .user, content: "测试多行输入\n回复两个字：收到")
+                ],
+                firewall: firewall
             )
             for try await delta in stream {
                 if case let .content(text) = delta {
@@ -155,11 +185,14 @@ public final class AppViewModel {
                 }
             }
             lastAdapterError = nil
+            errorBanner = nil
+            await refreshAuditSnapshot()
             return collected.isEmpty
                 ? "连上了，但没拿到文本：回包格式和预设对不上，需要校准"
-                : "通了：\(collected.prefix(24))"
+                : "连接成功：\(collected.prefix(24))"
         } catch {
             lastAdapterError = error.localizedDescription
+            await refreshAuditSnapshot()
             return "\(error.localizedDescription)"
         }
     }
@@ -188,12 +221,16 @@ public final class AppViewModel {
     private let biometricGate = BiometricGate()
     private var activeHarness: AgentHarness?
     private var activeTask: Task<Void, Never>?
+    /// 每次开新回合 +1；旧回合（已停止 / 被取代）的迟到事件与收尾一律按代际号丢弃，不会污染新回合状态
+    private var turnGeneration = 0
+    private var streamingSessionId: UUID?
     private var remoteClient: DshWebClient?
 
     private static let apiKeyAccount = "deepseek_primary_api_key"
     private static let sessionsFileName = "sessions_v1.json"
     private static let settingsKey = "deepseek_go_settings_v2"
     private static let customPresetsKey = "deepseek_go_custom_presets_v1"
+    private static let remoteSpecsKey = "deepseek_go_remote_specs_v1"
 
     public var onLiveActivityUpdate: (@Sendable (String, Bool) -> Void)?
 
@@ -227,6 +264,41 @@ public final class AppViewModel {
         Task {
             await firewall.setAllowedModelBaseURL(providerConfig.baseURL)
             await refreshAuditSnapshot()
+            await syncRemoteWebSpecs(silent: true)
+        }
+    }
+
+    public static let cloudSpecsURL = URL(string: "https://app.apifish.me/specs.json")!
+
+    /// 从你的自建云端（app.apifish.me/specs.json）热拉取最新免 Key 渠道规格，改接口免重签 App。
+    @discardableResult
+    public func syncRemoteWebSpecs(silent: Bool = false) async -> String {
+        var req = URLRequest(url: Self.cloudSpecsURL)
+        req.timeoutInterval = 8
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return "云端返回非 200 状态"
+            }
+            let remoteSpecs = try JSONDecoder().decode([WebAdapterSpec].self, from: data)
+            let valid = remoteSpecs.filter { $0.validationIssue == nil }
+            guard !valid.isEmpty else {
+                return remoteSpecs.isEmpty ? "云端配置为空" : "云端配置未通过校验，继续使用本机版本"
+            }
+            webAdapters = WebAdapterSpec.merging(remote: valid, into: webAdapters)
+            // 落盘最近一次有效配置：离线冷启动也能用上
+            if let encoded = try? JSONEncoder().encode(valid) {
+                UserDefaults.standard.set(encoded, forKey: Self.remoteSpecsKey)
+            }
+            let dropped = remoteSpecs.count - valid.count
+            return "已从 app.apifish.me 同步 \(valid.count) 个免 Key 渠道最新配置"
+                + (dropped > 0 ? "（\(dropped) 个未通过校验已忽略）" : "")
+        } catch {
+            if !silent {
+                return "云端同步失败：\(error.localizedDescription)"
+            }
+            return ""
         }
     }
 
@@ -248,23 +320,100 @@ public final class AppViewModel {
         }
     }
 
-    public var shortModelTitle: String {
-        let m = providerConfig.model.lowercased()
-        if engineMode == .remoteDshWeb { return "DSH" }
-        if m.contains("reasoner") || m.contains("r1") { return "R1" }
-        if m.contains("chat") || m.contains("v3") { return "V3" }
-        return providerConfig.model.components(separatedBy: "/").last ?? providerConfig.model
+    public var headerChannelTitle: String {
+        if engineMode == .remoteDshWeb { return "DSH 远程" }
+        if let spec = activeWebAdapter {
+            if spec.id == "web_deepseek" { return "DeepSeek" }
+            return spec.name.replacingOccurrences(of: "网页版", with: "")
+        }
+        let host = providerConfig.baseURL.host?.lowercased() ?? ""
+        if host.contains("apifish.me") { return "自建云端" }
+        if host.contains("deepseek.com") { return "DeepSeek" }
+        if host.contains("aliyuncs.com") { return "通义千问" }
+        if host.contains("bigmodel.cn") { return "智谱 GLM" }
+        if host.contains("groq.com") { return "Groq" }
+        if host.contains("azure.com") { return "GitHub AI" }
+        if host.contains("siliconflow.cn") { return "硅基流动" }
+        if host.contains("openrouter.ai") { return "OpenRouter" }
+        if host.contains("moonshot.cn") { return "Kimi" }
+        return "AI"
     }
 
-    /// True when the active configuration requires an API key that has not been provided yet.
+    public var shortModelTitle: String {
+        let m = providerConfig.model
+        let lower = m.lowercased()
+        if engineMode == .remoteDshWeb { return "DSH" }
+        if lower == "deepseek-chat" { return "V3" }
+        if lower == "deepseek-reasoner" { return "R1" }
+        if lower == "doubao-seed-1.6" { return "Seed 1.6" }
+        if lower == "doubao-seed-1.6-thinking" { return "深度思考" }
+        return m.components(separatedBy: "/").last ?? m
+    }
+
+    /// 当前渠道可供切换的完整模型列表（网页预设模型 / 网关实测模型 / 厂商推荐模型自动合并去重）。
+    public var availableModelsForActiveChannel: [String] {
+        if let spec = activeWebAdapter {
+            return spec.models
+        }
+        var out: [String] = []
+        func appendUnique(_ list: [String]) {
+            for item in list where !item.isEmpty && !out.contains(item) {
+                out.append(item)
+            }
+        }
+        let host = providerConfig.baseURL.host?.lowercased() ?? ""
+        if let matched = KeyProvider.matching(host: host) {
+            appendUnique(matched.models)
+        }
+        appendUnique(discoveredModels)
+        if out.isEmpty {
+            appendUnique(["deepseek-chat", "deepseek-reasoner"])
+        }
+        appendUnique([providerConfig.model])
+        return out
+    }
+
+    public var isThinkingModelActive: Bool {
+        let lower = providerConfig.model.lowercased()
+        return lower.contains("reasoner")
+            || lower.contains("r1")
+            || lower.contains("think")
+            || lower.contains("qwq")
+            || lower.contains("z1")
+            || lower.hasPrefix("o1")
+            || lower.hasPrefix("o3")
+    }
+
+    /// 按当前所属厂商/网页渠道智能切换「快速回答 ↔ 深度思考」对应模型，不再写死 DeepSeek。
+    public func toggleThinkingMode() {
+        let models = availableModelsForActiveChannel
+        let isThinking = isThinkingModelActive
+        func isReasoningModel(_ id: String) -> Bool {
+            let l = id.lowercased()
+            return l.contains("reasoner") || l.contains("r1") || l.contains("think") || l.contains("qwq") || l.contains("z1") || l.hasPrefix("o3")
+        }
+        let target: String
+        if isThinking {
+            target = models.first { !isReasoningModel($0) } ?? "deepseek-chat"
+        } else {
+            target = models.first { isReasoningModel($0) } ?? "deepseek-reasoner"
+        }
+        var next = providerConfig
+        next.model = target
+        updateProviderConfig(next)
+    }
+
+    /// True when the active configuration requires credentials that have not been provided yet.
     public var needsCredentialsBeforeSend: Bool {
         guard engineMode == .onDeviceHarness else { return remoteClient == nil }
-        // 网页版通道：有凭据就能直接发
         if let spec = activeWebAdapter { return !hasWebCredential(spec) }
-        let isOfficial = (providerConfig.baseURL.host?.lowercased() ?? "") == "api.deepseek.com"
-        // 自定义网关（反代 / 局域网）通常不需要 key，不拦
-        if !isOfficial { return false }
+        let host = providerConfig.baseURL.host?.lowercased() ?? ""
+        if !KeyProvider.requiresAPIKey(host: host) { return false }
         return !hasAPIKeyConfigured
+    }
+
+    public var isAIConfigured: Bool {
+        !needsCredentialsBeforeSend
     }
 
     public var companionMood: CompanionMood {
@@ -487,6 +636,17 @@ public final class AppViewModel {
     // MARK: - Session Lifecycle, Forking & Regenerate
 
     public func createNewSession(in projectId: UUID? = nil) {
+        // 已有一个还没说过话的空对话就直接复用，避免连点「新对话」堆出一串空会话
+        if let idx = sessions.firstIndex(where: { $0.projectId == projectId && !$0.messages.contains { $0.role != .system } }) {
+            var reused = sessions.remove(at: idx)
+            reused.title = "新对话"
+            reused.engineMode = engineMode
+            reused.updatedAt = Date()
+            sessions.insert(reused, at: 0)
+            activateSession(reused.id)
+            persistSessions()
+            return
+        }
         let session = ChatSession(
             title: "新对话",
             projectId: projectId,
@@ -614,12 +774,22 @@ public final class AppViewModel {
         if activeSessionId == id { activateSession(id) }
     }
 
+    public func renameSession(_ id: UUID, to title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let idx = sessions.firstIndex(where: { $0.id == id }) else { return }
+        sessions[idx].title = String(trimmed.prefix(40))
+        persistSessions()
+    }
+
     public func deleteSession(_ id: UUID) {
+        if isStreaming && streamingSessionId == id {
+            stopGeneration()
+        }
         sessions.removeAll { $0.id == id }
         if sessions.isEmpty {
             createNewSession()
-        } else if activeSessionId == id {
-            activeSessionId = sessions.first?.id
+        } else if activeSessionId == id, let next = sessions.first?.id {
+            activateSession(next)
         }
         persistSessions()
     }
@@ -631,11 +801,12 @@ public final class AppViewModel {
         let sliced = Array(cur.messages[...cutIdx])
         let forked = ChatSession(
             title: "\(cur.title) · 分支",
+            projectId: cur.projectId,
             engineMode: cur.engineMode,
             messages: sliced
         )
         sessions.insert(forked, at: 0)
-        activeSessionId = forked.id
+        activateSession(forked.id)
         persistSessions()
     }
 
@@ -695,8 +866,13 @@ public final class AppViewModel {
     }
 
     public func stopGeneration() {
+        turnGeneration += 1
         activeTask?.cancel()
         activeTask = nil
+        activeHarness = nil
+        dropTrailingEmptyAssistant(in: streamingSessionId)
+        streamingSessionId = nil
+        persistSessions()
         isStreaming = false
         activeStageText = ""
         pendingApproval = nil
@@ -927,7 +1103,18 @@ public final class AppViewModel {
         if let spec = activeWebAdapter,
            let token = (try? vault.loadSecret(for: webCredentialAccount(spec))) ?? nil,
            !token.isEmpty {
-            return WebAdapterTransport(spec: spec, credential: token)
+            let cookies = (try? vault.loadSecret(for: webCookieAccount(spec))) ?? nil
+            #if os(iOS)
+            let performer: BrowserStreamPerformer? = WebKitBrowserStreamPerformer.shared
+            #else
+            let performer: BrowserStreamPerformer? = nil
+            #endif
+            return WebAdapterTransport(
+                spec: spec,
+                credential: token,
+                cookieHeader: cookies,
+                browserPerformer: performer
+            )
         }
         // 协议层自动适配：responses 用另一个客户端，用户不需要知道
         if providerConfig.flavor == .responses {
@@ -950,7 +1137,10 @@ public final class AppViewModel {
         let cfg = providerConfig
         let policy = approvalPolicy
 
+        turnGeneration += 1
+        let generation = turnGeneration
         activeHarness = harness
+        streamingSessionId = sessionId
         isStreaming = true
         activeStageText = "思考中"
         onLiveActivityUpdate?("思考中…", true)
@@ -965,9 +1155,13 @@ public final class AppViewModel {
                     approvalPolicy: policy
                 ) { [weak self] event in
                     await MainActor.run {
-                        self?.applyAgentEvent(event, sessionId: sessionId)
+                        guard let self, self.turnGeneration == generation else { return }
+                        self.applyAgentEvent(event, sessionId: sessionId)
                     }
                 }
+                guard self.turnGeneration == generation else { return }
+                self.streamingSessionId = nil
+                self.activeHarness = nil
                 self.isStreaming = false
                 self.activeStageText = ""
                 self.queuedSteers.removeAll()
@@ -979,17 +1173,36 @@ public final class AppViewModel {
                 self.persistSessions()
                 self.onLiveActivityUpdate?("已完成", false)
                 await self.refreshAuditSnapshot()
-            } catch is CancellationError {
-                self.isStreaming = false
-                self.activeStageText = ""
             } catch {
+                // 已被「停止」或新回合取代：收尾已由 stopGeneration 完成，这里什么都不碰
+                guard self.turnGeneration == generation else { return }
+                self.streamingSessionId = nil
+                self.activeHarness = nil
                 self.isStreaming = false
                 self.activeStageText = ""
-                self.errorBanner = error.localizedDescription
-                self.onLiveActivityUpdate?("已暂停", false)
+                self.dropTrailingEmptyAssistant(in: sessionId)
+                self.persistSessions()
+                let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+                if !cancelled {
+                    self.errorBanner = error.localizedDescription
+                    self.lastAdapterError = error.localizedDescription
+                }
+                self.onLiveActivityUpdate?(cancelled ? "已停止" : "已暂停", false)
                 await self.refreshAuditSnapshot()
             }
         }
+    }
+
+    /// 去掉还没收到任何内容的空助手气泡（停止 / 报错时），保留已经吐出的半截回答。
+    private func dropTrailingEmptyAssistant(in sessionId: UUID?) {
+        guard let sessionId,
+              let sIdx = sessions.firstIndex(where: { $0.id == sessionId }),
+              let last = sessions[sIdx].messages.last,
+              last.role == .assistant,
+              last.content.isEmpty,
+              (last.reasoningContent ?? "").isEmpty,
+              last.toolCalls.isEmpty else { return }
+        sessions[sIdx].messages.removeLast()
     }
 
     private func applyAgentEvent(_ event: AgentEvent, sessionId: UUID) {
@@ -1175,6 +1388,10 @@ public final class AppViewModel {
             hasSeenPurgeIntro = s.hasSeenPurgeIntro ?? false
             activeWebAdapterID = s.activeWebAdapterID
             webAdapters = WebAdapterSpec.presets + (s.customWebAdapters ?? [])
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.remoteSpecsKey),
+           let cached = try? JSONDecoder().decode([WebAdapterSpec].self, from: data) {
+            webAdapters = WebAdapterSpec.merging(remote: cached, into: webAdapters)
         }
         if let data = UserDefaults.standard.data(forKey: Self.customPresetsKey),
            let customs = try? JSONDecoder().decode([PromptPreset].self, from: data) {

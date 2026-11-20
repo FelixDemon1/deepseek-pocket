@@ -11,6 +11,7 @@ public struct ConnectAISheet: View {
     @State private var baseDraft: String = ""
     @State private var modelDraft: String = ""
     @State private var loginSpec: WebAdapterSpec?
+    @State private var clearBeforeLogin = false
     @State private var isConnecting = false
     @State private var resultMessage: String?
     @State private var providerID: String = KeyProvider.all[0].id
@@ -46,10 +47,11 @@ public struct ConnectAISheet: View {
             }
             #if os(iOS)
             .sheet(item: $loginSpec) { spec in
-                WebAdapterLoginSheet(spec: spec) { token in
-                    vm.saveWebCredential(token, for: spec)
-                    resultMessage = "已读到凭据，正在测试…"
+                WebAdapterLoginSheet(spec: spec, clearExistingOnAppear: clearBeforeLogin) { token, cookieHeader in
+                    vm.saveWebCredential(token, cookieHeader: cookieHeader, for: spec)
+                    resultMessage = "已读到凭据，正在测试连接…"
                     loginSpec = nil
+                    clearBeforeLogin = false
                     Task {
                         resultMessage = await vm.testWebAdapter(spec)
                     }
@@ -58,6 +60,9 @@ public struct ConnectAISheet: View {
             #endif
             .onAppear {
                 keyDraft = ""
+                if let matched = KeyProvider.matching(host: vm.providerConfig.baseURL.host ?? "") {
+                    providerID = matched.id
+                }
                 baseDraft = vm.providerConfig.baseURL.absoluteString
                 modelDraft = vm.providerConfig.model
                 if let spec = vm.activeWebAdapter { baseDraft = spec.chatURL }
@@ -96,8 +101,7 @@ public struct ConnectAISheet: View {
     }
 
     private var isConfigured: Bool {
-        if let spec = vm.activeWebAdapter { return vm.hasWebCredential(spec) }
-        return vm.hasAPIKeyConfigured
+        vm.isAIConfigured
     }
 
     // MARK: ① 登录官方账号
@@ -111,6 +115,7 @@ public struct ConnectAISheet: View {
                         resultMessage = "已切到 \(spec.name)，正在测试…"
                         Task { resultMessage = await vm.testWebAdapter(spec) }
                     } else {
+                        clearBeforeLogin = false
                         loginSpec = spec
                     }
                 } label: {
@@ -118,8 +123,15 @@ public struct ConnectAISheet: View {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text(spec.name).font(.subheadline)
-                                if !spec.calibrated {
-                                    Text("测试中")
+                                if spec.calibrated {
+                                    Text("推荐 · 免 Key")
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(Capsule().fill(DeepSeekTheme.diffAdded.opacity(0.15)))
+                                        .foregroundStyle(DeepSeekTheme.diffAdded)
+                                } else {
+                                    Text("实验性")
                                         .font(.system(size: 9, weight: .semibold))
                                         .padding(.horizontal, 5)
                                         .padding(.vertical, 1)
@@ -127,7 +139,7 @@ public struct ConnectAISheet: View {
                                         .foregroundStyle(.orange)
                                 }
                             }
-                            Text(vm.hasWebCredential(spec) ? "已登录，点一下使用" : "点这里登录，自动读取登录状态")
+                            Text(vm.hasWebCredential(spec) ? "已登录，点一下立即使用" : "点这里登录官网账号，自动接入无需买 Key")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -146,16 +158,33 @@ public struct ConnectAISheet: View {
                         Button("再测一次") {
                             Task { resultMessage = await vm.testWebAdapter(spec) }
                         }
-                        Button("重新登录（登录过期时用）") { loginSpec = spec }
+                        Button("重新登录（登录过期时用）") {
+                            clearBeforeLogin = true
+                            loginSpec = spec
+                        }
+                        Button("退出此账号", role: .destructive) {
+                            vm.clearWebCredential(for: spec)
+                            resultMessage = "已清除 \(spec.name) 登录凭据"
+                        }
                     }
                 }
             }
 
-            Text("在官方网页版里登录一次就行，登录态留在本机；App 只读自己这个网页视图，不碰别的 App。长按某个渠道可以重新登录或再测一次。")
+            Button {
+                Task {
+                    resultMessage = "正在从云端同步渠道配置…"
+                    resultMessage = await vm.syncRemoteWebSpecs(silent: false)
+                }
+            } label: {
+                Label("从云端热更新免 Key 渠道配置（app.apifish.me）", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.footnote)
+            }
+
+            Text("小白首选「DeepSeek 网页版」或「豆包网页版」：登录一次免买 Key；长按渠道可重新测速或切换账号。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         } header: {
-            Text("① 登录官方账号（不用买 Key）")
+            Text("① 登录官方账号（免费 · 不用买 Key）")
         }
     }
 
@@ -185,6 +214,48 @@ public struct ConnectAISheet: View {
                     Text("厂商")
                     Spacer()
                     Text(provider.name)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.footnote)
+            }
+
+            Menu {
+                let candidateModels: [String] = {
+                    var list = provider.models
+                    if KeyProvider.matching(host: vm.providerConfig.baseURL.host ?? "")?.id == provider.id {
+                        for m in vm.discoveredModels where !list.contains(m) {
+                            list.append(m)
+                        }
+                    }
+                    return list
+                }()
+                ForEach(candidateModels, id: \.self) { m in
+                    Button {
+                        modelDraft = m
+                        if vm.activeWebAdapter == nil,
+                           KeyProvider.matching(host: vm.providerConfig.baseURL.host ?? "")?.id == provider.id {
+                            var updated = vm.providerConfig
+                            updated.model = m
+                            vm.updateProviderConfig(updated)
+                            resultMessage = "已切换模型：\(m)"
+                        }
+                    } label: {
+                        if m == (modelDraft.isEmpty ? provider.defaultModel : modelDraft) {
+                            Label(m, systemImage: "checkmark")
+                        } else {
+                            Text(m)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text("默认模型（可自由切换）")
+                    Spacer()
+                    Text(modelDraft.isEmpty ? provider.defaultModel : modelDraft)
+                        .font(.footnote.monospaced())
                         .foregroundStyle(.secondary)
                 }
                 .font(.footnote)

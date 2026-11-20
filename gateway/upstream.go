@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+// maxRateLimitCooldown caps the linear 429 back-off so a key that was hammered
+// for a while comes back within minutes instead of hours.
+const maxRateLimitCooldown = 5 * time.Minute
+
 type keyState struct {
 	Name      string
 	Key       string
@@ -60,7 +64,7 @@ func (p *UpstreamPool) Report(keyName string, status int) {
 		switch {
 		case status == http.StatusTooManyRequests:
 			k.Failures++
-			k.CoolUntil = time.Now().Add(time.Duration(30*k.Failures) * time.Second)
+			k.CoolUntil = time.Now().Add(min(time.Duration(30*k.Failures)*time.Second, maxRateLimitCooldown))
 		case status == http.StatusUnauthorized || status == http.StatusForbidden:
 			k.Failures++
 			k.CoolUntil = time.Now().Add(10 * time.Minute)

@@ -119,12 +119,10 @@ public struct SteerComposerBar: View {
                             .background(Circle().fill(canvas))
                     }
 
-                    let isR1 = vm.providerConfig.model.lowercased().contains("reasoner") || vm.providerConfig.model.lowercased().contains("r1")
+                    let isR1 = vm.isThinkingModelActive
                     let modeActive = vm.activePresetId != "default_agent"
                     toggleChip(title: "深度思考", icon: "sparkles", active: isR1, scheme: scheme, secondary: secondary) {
-                        var next = vm.providerConfig
-                        next.model = isR1 ? "deepseek-chat" : "deepseek-reasoner"
-                        vm.updateProviderConfig(next)
+                        vm.toggleThinkingMode()
                     }
 
                     Menu {

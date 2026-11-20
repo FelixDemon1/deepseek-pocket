@@ -31,6 +31,15 @@ struct DeepSeekGoApp: App {
                         viewModel.requestedSheetName = "presets"
                     } else if CommandLine.arguments.contains("--lift-probe") {
                         SandboxLiftProbe.log()
+                    } else if CommandLine.arguments.contains("--verify-web") {
+                        Task {
+                            let resV3 = await viewModel.testWebAdapter(.deepSeekWeb)
+                            print("[WEB-ADAPTER-VERIFY-V3] \(resV3)")
+                            let resDoubao = await viewModel.testWebAdapter(.doubaoWeb)
+                            print("[WEB-ADAPTER-VERIFY-DOUBAO] \(resDoubao)")
+                            let resQwen = await viewModel.testWebAdapter(.qwenWeb)
+                            print("[WEB-ADAPTER-VERIFY-QWEN] \(resQwen)")
+                        }
                     } else if let pendingPrompt = QuickPromptBridge.shared.consumePendingPrompt() {
                         viewModel.sendOrSteer(text: pendingPrompt)
                     }

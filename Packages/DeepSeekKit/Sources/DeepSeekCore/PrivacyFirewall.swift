@@ -99,6 +99,12 @@ public actor PrivacyFirewall {
         }
     }
 
+    /// 「设白名单 + 校验」在同一次 actor 调用里完成，避免并发请求（如测速与正式对话）互相把对方的模型域名挤掉。
+    public func authorize(_ request: URLRequest, purpose: NetworkTrafficPurpose, allowingModelBase base: URL) throws {
+        setAllowedModelBaseURL(base)
+        try authorize(request, purpose: purpose)
+    }
+
     public func setAllowedRemoteDshBaseURL(_ url: URL?) {
         if let host = url?.host?.lowercased(), !host.isEmpty {
             allowedRemoteDshHosts = [host]

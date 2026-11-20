@@ -72,6 +72,7 @@ type Store struct {
 	guests      map[string]*guestEntry
 	global      guestEntry
 	credentials map[string]*Credential
+	prunedDay   string
 }
 
 func OpenStore(path string, defaultQuota int64) (*Store, error) {
@@ -380,7 +381,22 @@ func (s *Store) ConsumeGuest(ipHash string, tokens, perIP, global int64) {
 		s.guests[ipHash] = e
 	}
 	e.Used += tokens
+	s.pruneGuestsLocked(day)
 	_ = s.saveLocked()
+}
+
+// pruneGuestsLocked drops per-IP ledgers from previous days (they are reset on
+// next use anyway), so data.json does not grow forever. Runs once per day.
+func (s *Store) pruneGuestsLocked(day string) {
+	if s.prunedDay == day {
+		return
+	}
+	for k, v := range s.guests {
+		if v.Day != day {
+			delete(s.guests, k)
+		}
+	}
+	s.prunedDay = day
 }
 
 // GuestSnapshot reports remaining free budget for /v1/me.

@@ -39,9 +39,7 @@ func NewGateway(cfg *Config, store *Store, pool *UpstreamPool) (*Gateway, error)
 		store:   store,
 		pool:    pool,
 		limiter: newRateLimiter(cfg.RequestsPerMinute),
-		http: &http.Client{
-			Timeout: time.Duration(cfg.UpstreamTimeoutSec) * time.Second,
-		},
+		http:    newUpstreamClient(time.Duration(cfg.UpstreamTimeoutSec) * time.Second),
 	}
 	if cfg.BYOA.Enabled {
 		vault, err := newCredentialVault(cfg.BYOA.EncryptionKey)
@@ -56,6 +54,24 @@ func NewGateway(cfg *Config, store *Store, pool *UpstreamPool) (*Gateway, error)
 		log.Printf("BYOA 已启用：adapter=%s mode=%s models=%v", spec.Name, spec.ResponseMode, spec.Models)
 	}
 	return g, nil
+}
+
+// newUpstreamClient bounds connecting and waiting for response headers, but not
+// the body: an SSE turn (long R1 reasoning) may legitimately stream for many
+// minutes and is torn down when the client disconnects (request context).
+// Buffered (non-stream) calls get an explicit deadline in handleChatCompletions.
+func newUpstreamClient(headerTimeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout: headerTimeout,
+			IdleConnTimeout:       90 * time.Second,
+			MaxIdleConnsPerHost:   16,
+			ForceAttemptHTTP2:     true,
+		},
+	}
 }
 
 // ---------- identity ----------
@@ -99,10 +115,16 @@ func bearerToken(r *http.Request) string {
 }
 
 // clientIP honours X-Forwarded-For (set by Caddy/Nginx) and falls back to the socket.
+// It takes the right-most entry: that one is appended by our own reverse proxy,
+// whereas everything to its left is client-controlled and trivially spoofed to
+// dodge the per-IP free budget.
 func clientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
-			return first
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if ip := strings.TrimSpace(parts[i]); ip != "" {
+				return ip
+			}
 		}
 	}
 	if rip := r.Header.Get("X-Real-IP"); rip != "" {
@@ -120,13 +142,28 @@ func ipHash(ip string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// resolve maps a request to either a paid token holder or an anonymous free user.
+// resolve maps a metered request (one that spends tokens) to either a paid token
+// holder or an anonymous free user, enforcing RPM and budgets.
 func (g *Gateway) resolve(r *http.Request) (*identity, *httpError) {
+	return g.identify(r, true)
+}
+
+// peek identifies the caller for read-only endpoints (/v1/models, /v1/me,
+// /account/status): it neither burns the per-minute allowance nor rejects an
+// exhausted budget, so the app can still show "0 remaining" instead of an error.
+func (g *Gateway) peek(r *http.Request) (*identity, *httpError) {
+	return g.identify(r, false)
+}
+
+func (g *Gateway) identify(r *http.Request, metered bool) (*identity, *httpError) {
 	token := bearerToken(r)
 	if token != "" {
 		user, err := g.store.Authenticate(token)
 		if err != nil {
 			return nil, &httpError{http.StatusUnauthorized, "invalid_token", err.Error()}
+		}
+		if !metered {
+			return &identity{userID: user.ID, plan: user.Plan, remaining: user.Remaining()}, nil
 		}
 		reserved, rerr := g.store.Reserve(user.ID)
 		if errors.Is(rerr, ErrQuotaExceeded) {
@@ -144,6 +181,10 @@ func (g *Gateway) resolve(r *http.Request) (*identity, *httpError) {
 	}
 
 	hash := ipHash(clientIP(r))
+	if !metered {
+		ipRem, _ := g.store.GuestSnapshot(hash, g.cfg.AnonymousDailyTokens, g.cfg.GlobalDailyTokens)
+		return &identity{ipHash: hash, isGuest: true, plan: "free", remaining: ipRem}, nil
+	}
 	if !g.limiter.Allow(hash) {
 		return nil, &httpError{http.StatusTooManyRequests, "rate_limited",
 			fmt.Sprintf("请求过于频繁，上限 %d 次/分钟", g.cfg.RequestsPerMinute)}
@@ -191,7 +232,7 @@ func writeAPIError(w http.ResponseWriter, status int, kind, msg string) {
 // ---------- public API ----------
 
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
-	ident, herr := g.resolve(r)
+	ident, herr := g.peek(r)
 	if herr != nil {
 		writeAPIError(w, herr.status, herr.kind, herr.msg)
 		return
@@ -209,7 +250,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleMe(w http.ResponseWriter, r *http.Request) {
-	ident, herr := g.resolve(r)
+	ident, herr := g.peek(r)
 	if herr != nil {
 		writeAPIError(w, herr.status, herr.kind, herr.msg)
 		return
@@ -288,9 +329,15 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resp, keyName, err := g.dialUpstream(r.Context(), forwarded)
-	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, "upstream_error", err.Error())
+	ctx := r.Context()
+	if !stream {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(g.cfg.UpstreamTimeoutSec)*time.Second)
+		defer cancel()
+	}
+	resp, keyName, fail := g.dialUpstream(ctx, forwarded)
+	if fail != nil {
+		writeAPIError(w, fail.status, "upstream_error", fail.msg)
 		return
 	}
 	defer resp.Body.Close()
@@ -302,21 +349,29 @@ func (g *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request) 
 	g.bufferThrough(w, resp, ident, keyName)
 }
 
-func (g *Gateway) dialUpstream(ctx context.Context, body []byte) (*http.Response, string, error) {
+// upstreamFailure is what the *client* sees. Upstream key names and raw upstream
+// bodies stay in the server log only.
+type upstreamFailure struct {
+	status int
+	msg    string
+}
+
+func (g *Gateway) dialUpstream(ctx context.Context, body []byte) (*http.Response, string, *upstreamFailure) {
 	attempts := len(g.cfg.UpstreamKeys)
-	var lastErr error
+	var fail *upstreamFailure
 	for i := 0; i < attempts; i++ {
 		key, err := g.pool.Acquire()
 		if err != nil {
-			if lastErr != nil {
-				return nil, "", lastErr
+			if fail != nil {
+				return nil, "", fail
 			}
-			return nil, "", err
+			log.Printf("upstream: %v", err)
+			return nil, "", &upstreamFailure{http.StatusServiceUnavailable, "上游模型服务暂时不可用，请稍后重试"}
 		}
 		target := g.pool.BaseURL() + "/chat/completions"
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 		if err != nil {
-			return nil, "", err
+			return nil, "", &upstreamFailure{http.StatusInternalServerError, "构造上游请求失败"}
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
@@ -324,8 +379,12 @@ func (g *Gateway) dialUpstream(ctx context.Context, body []byte) (*http.Response
 
 		resp, err := g.http.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, "", &upstreamFailure{http.StatusGatewayTimeout, "上游响应超时，请稍后重试"}
+			}
 			g.pool.Report(key.Name, http.StatusInternalServerError)
-			lastErr = err
+			log.Printf("upstream %s dial error: %v", key.Name, err)
+			fail = &upstreamFailure{http.StatusBadGateway, "上游模型服务暂时不可用，请稍后重试"}
 			continue
 		}
 		if resp.StatusCode == http.StatusOK {
@@ -335,18 +394,41 @@ func (g *Gateway) dialUpstream(ctx context.Context, body []byte) (*http.Response
 		g.pool.Report(key.Name, resp.StatusCode)
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		lastErr = fmt.Errorf("上游 %s 返回 HTTP %d: %s", key.Name, resp.StatusCode, strings.TrimSpace(string(detail)))
-		if resp.StatusCode != http.StatusTooManyRequests &&
-			resp.StatusCode != http.StatusUnauthorized &&
-			resp.StatusCode != http.StatusForbidden &&
-			resp.StatusCode < 500 {
-			break
+		log.Printf("upstream %s HTTP %d: %s", key.Name, resp.StatusCode, strings.TrimSpace(string(detail)))
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
+			fail = &upstreamFailure{http.StatusServiceUnavailable, "上游模型服务繁忙，请稍后重试"}
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			fail = &upstreamFailure{http.StatusBadGateway, "网关上游密钥异常，请联系运维者"}
+		case resp.StatusCode >= 500:
+			fail = &upstreamFailure{http.StatusBadGateway, "上游模型服务暂时不可用，请稍后重试"}
+		default:
+			// 400 / 404 / 422 etc. are the caller's own mistake (bad model id, bad
+			// params): pass the status and upstream's human message through.
+			return nil, "", &upstreamFailure{resp.StatusCode, upstreamMessage(detail, resp.StatusCode)}
 		}
 	}
-	if lastErr == nil {
-		lastErr = errors.New("上游不可用")
+	if fail == nil {
+		fail = &upstreamFailure{http.StatusBadGateway, "上游不可用"}
 	}
-	return nil, "", lastErr
+	return nil, "", fail
+}
+
+// upstreamMessage extracts `error.message` from an OpenAI-style error body.
+func upstreamMessage(raw []byte, status int) string {
+	var parsed struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &parsed) == nil && strings.TrimSpace(parsed.Error.Message) != "" {
+		msg := strings.TrimSpace(parsed.Error.Message)
+		if len(msg) > 300 {
+			msg = msg[:300]
+		}
+		return msg
+	}
+	return fmt.Sprintf("上游拒绝了请求（HTTP %d）", status)
 }
 
 func (g *Gateway) streamThrough(w http.ResponseWriter, r *http.Request, resp *http.Response, ident *identity, keyName string) {
@@ -362,7 +444,6 @@ func (g *Gateway) streamThrough(w http.ResponseWriter, r *http.Request, resp *ht
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-DSG-Plan", ident.plan)
 	w.Header().Set("X-DSG-Quota-Remaining", fmt.Sprint(ident.remaining))
-	w.Header().Set("X-DSG-Upstream-Key", keyName)
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
@@ -417,7 +498,6 @@ func (g *Gateway) bufferThrough(w http.ResponseWriter, resp *http.Response, iden
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-DSG-Plan", ident.plan)
 	w.Header().Set("X-DSG-Quota-Remaining", fmt.Sprint(ident.remaining))
-	w.Header().Set("X-DSG-Upstream-Key", keyName)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(raw)
 }
